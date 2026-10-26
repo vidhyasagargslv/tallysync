@@ -32,7 +32,7 @@ other GUIDs with 409. To switch company on purpose: "Reset company link" in the 
 ```bash
 npm install && npm approve-scripts esbuild better-sqlite3
 cp apps/web/.env.example apps/web/.env       # API key + SQLite path
-npm test                                     # builds the web app + 45-check e2e in mock mode
+npm test                                     # builds the web app + 65-check e2e in mock mode
 npm run dev:web                              # http://localhost:3000
 # second terminal: agent against mock Tally
 TALLY_MODE=mock TALLYSYNC_HOME=./data/agent TALLYSYNC_BACKEND_URL=http://localhost:3000 \
@@ -62,6 +62,53 @@ LocalMachine, `state\`, `logs\agent.log`). Send `logs\agent.log` when something 
 
 CLI: `tallysync-agent.exe --version`, `configure --backend URL --key KEY --company "Name" [--tally URL]`, `sync-once`.
 
+## Tally mapping (declarative config)
+Where sales, purchases, taxes, round-off and auto-created masters go is defined in one file:
+`apps/web/config/tally-mapping.jsonc` (JSON with comments; path overridable with `TALLY_MAPPING_PATH`). Schema:
+`TallyMappingZ` in `packages/contracts/src/mapping.ts`. Every key is optional; `{}` gives the defaults.
+
+- The app serves it at `GET /api/tally-sync/mapping` (API key) as `{ version, hash, source, mapping }`. An invalid file
+  returns 422 and the agent keeps its last good copy (cached in `state/mapping-cache.json`). `agent.json` -> `mapping`
+  is only used if the agent has never fetched one.
+- Each cycle the agent re-fetches it (edits apply without restart), checks every name it references against the Tally
+  company's ledgers/groups/voucher types/godowns/units, and posts the result to `POST /api/tally-sync/mapping/validation`.
+  The **Tally mapping** page shows the active file, schema errors, which version the agent uses and the issues.
+- Before each voucher the agent checks the party, line ledgers, tax ledgers, round-off ledger, items, godowns and voucher
+  type. Missing ones are created under the configured group when `autoCreate` allows it; otherwise the record fails with
+  a message saying what is missing and how to fix it.
+
+Ledger choice per line: `items` > `itemGroups` (Tally stock group of the item) > `rules` (first match; conditions
+`gstRate`, `supply` local/interstate from the order's GST mode, `itemGroup`, `item`) > `default`. Lines with
+different rates can land in different sales ledgers. Tax ledgers come from `tax` (or `purchaseTax` for purchases) with
+`byRate` overrides. With `roundOff.enabled` the party total is rounded (`nearest`/`up`/`down` to `precision`) and the
+difference is posted to the round-off ledger so the voucher balances.
+
+```jsonc
+{
+  "version": "2",
+  "voucherTypes": { "sales": "GST Sales" },
+  "sales": {
+    "default": "Sales",
+    "rules": [
+      { "gstRate": 5, "supply": "local", "ledger": "Sales 5% Local" },
+      { "supply": "interstate", "ledger": "Sales Interstate" }
+    ],
+    "itemGroups": { "Services": "Service Income" }
+  },
+  "purchase": { "default": "Purchase" },
+  "tax": { "cgst": "CGST", "sgst": "SGST", "igst": "IGST", "byRate": { "5": { "cgst": "CGST 2.5%", "sgst": "SGST 2.5%", "igst": "IGST 5%" } } },
+  "roundOff": { "enabled": true, "ledger": "Round Off", "mode": "nearest", "precision": 1 },
+  "cashBank": { "receipt": "Cash", "payment": "HDFC Bank" },
+  "defaultGodown": "Main Location",
+  "groups": { "customers": "Sundry Debtors", "suppliers": "Sundry Creditors", "salesLedgers": "Sales Accounts",
+              "purchaseLedgers": "Purchase Accounts", "taxLedgers": "Duties & Taxes", "roundOff": "Indirect Expenses",
+              "items": "", "defaultUnit": "Nos" },
+  "autoCreate": { "parties": true, "ledgers": true, "items": false },
+  "names": { "parties": { "Ravi": "Ravi Stores" }, "items": {}, "units": { "pcs": "Nos" } }
+}
+```
+Other backends: serve the same JSON from `GET /api/tally-sync/mapping` (validation endpoint optional; 404 is ignored).
+
 ## Adapting to another client's backend
 Implement these with header auth `x-api-key` (agent also sends `x-company-guid`, `x-contract-version`); schemas are in
 `packages/contracts/src/index.ts`:
@@ -72,6 +119,8 @@ Implement these with header auth `x-api-key` (agent also sends `x-company-guid`,
 | `POST /api/tally-sync/result` | `{ id, status: synced\|failed, action, error, transient, tallyGuid, tallyMasterId, voucherNumber, requestXml, responseXml }`. `transient=true` -> keep pending and retry. |
 | `POST /api/tally-sync/data/{entity}` | `{ entity, full, sinceAlterId, maxAlterId, company, objects: [{ guid, name, masterid, alterid, parent, data, rawXml, rawJson }], rows }`. Upsert by (entity, guid); `full=true` = snapshot (delete others). `rows` = balance refresh for `stock_summary` (stock items) / `outstanding`, `trial_balance` (ledgers). |
 | `POST /api/tally-sync/status` | heartbeat (store latest). Should not be company-gated. |
+| `GET /api/tally-sync/mapping` | `{ version, hash, source, mapping }` (see Tally mapping above). |
+| `POST /api/tally-sync/mapping/validation` | optional; `{ hash, checkedAt, company, ok, issues[] }`. |
 
 FastAPI: 4 route functions + tables like `apps/web/lib/db.ts` (`outbox`, `tally_objects`, `schema_fields`, `pull_state`,
 `agent_status`). Supabase: the same 4 as Edge Functions (or Next/Express routes) over those tables. Reference logic: `apps/web/lib/repo.ts`.
@@ -90,4 +139,4 @@ scripts/e2e.ts       mock-mode end-to-end test
 - Exe is unsigned (SmartScreen warning) and embeds the Node version used to build it (currently 26.x).
 - The Next.js UI has no login (fine for testing; add auth before exposing it). One Tally company per agent/backend.
 - No auto-update, no tray icon, no Postgres run yet (SQL is portable). Invoice-against-order linking, voucher
-  delete/cancel, multi-currency and agent-side mapping UI (mapping lives in `agent.json` -> `mapping`) not built.
+  delete/cancel, multi-currency not built. Mapping page is read-only (edit the file).

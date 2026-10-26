@@ -25,6 +25,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <Link href="/schema">Schema explorer</Link>
         <div className="sec">System</div>
         <Link href="/log">Sync log</Link>
+        <Link href="/mapping">Tally mapping</Link>
         <Link href="/settings">Settings</Link>
       </nav>
       <main>{children}</main>

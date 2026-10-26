@@ -22,7 +22,8 @@ Company gate: ${ok(a.companyState === 'matched', 'matched', esc(a.companyState))
 Locked company: ${lock ? `${esc(lock.name)} | GUID ${esc(lock.guid)} | GSTIN ${esc(lock.gstin ?? '-')}` : 'not locked yet (locks on first successful connect)'}<br>
 Open in Tally: ${esc(a.openCompanies.map((c) => c.name).join(', ') || '-')}<br>
 Last pull: ${esc(a.lastPullAt ?? '-')} / last push: ${esc(a.lastPushAt ?? '-')}<br>
-Last error: ${esc(a.lastError ?? '-')}
+Mapping: ${esc(a.mappingSource)} ${esc(a.mappingCache ? `v${a.mappingCache.version} ${a.mappingCache.hash.slice(0, 12)}` : "(agent.json fallback)")} - ${a.lastValidation ? (a.lastValidation.issues.length ? `<span class="bad">${a.lastValidation.issues.length} issue(s)</span>` : `<span class="ok">valid in Tally</span>`) : "not checked"}<br>
+Last error: ${esc(a.lastError ?? "-")}
 <div class="row"><form method="post" action="/sync"><button>Sync now</button></form>
 <form method="post" action="/relink" onsubmit="return confirm('Clear the locked company? The next connect locks whichever company matches the name.')"><button>Re-link company</button></form></div></div>
 <form class="card" method="post" action="/settings"><b>Connection</b>

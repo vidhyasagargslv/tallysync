@@ -16,10 +16,17 @@ process.env.TALLYSYNC_QUIET = '1'
 const KEY = 'e2e-key-123456'
 const port = 3900 + Math.floor(Math.random() * 90)
 const base = `http://127.0.0.1:${port}`
+const mappingFile = path.join(tmp, 'tally-mapping.jsonc')
+fs.copyFileSync(path.join(root, 'apps/web/config/tally-mapping.jsonc'), mappingFile)
+let mtimeBump = 0
+const writeMapping = (m: unknown) => {
+  fs.writeFileSync(mappingFile, JSON.stringify(m, null, 2))
+  const t = new Date(Date.now() + ++mtimeBump * 2000); fs.utimesSync(mappingFile, t, t)
+}
 
 if (!fs.existsSync(path.join(root, 'apps/web/.next/BUILD_ID'))) { console.error('build the web app first: npm run build -w @tallysync/web'); process.exit(1) }
 const web = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], {
-  cwd: path.join(root, 'apps/web'), env: { ...process.env, DATABASE_PATH: path.join(tmp, 'web.db'), TALLYSYNC_API_KEY: KEY }, stdio: ['ignore', 'pipe', 'pipe']
+  cwd: path.join(root, 'apps/web'), env: { ...process.env, DATABASE_PATH: path.join(tmp, 'web.db'), TALLYSYNC_API_KEY: KEY, TALLY_MAPPING_PATH: mappingFile }, stdio: ['ignore', 'pipe', 'pipe']
 })
 let webOut = ''
 web.stdout.on('data', (d) => (webOut += d)); web.stderr.on('data', (d) => (webOut += d))
@@ -167,6 +174,70 @@ const newKey = r.body.apiKey
 agent.configure({ apiKey: newKey })
 c = await agent.cycle()
 check('regenerated key works', c.gate === 'matched' && !c.error, c)
+
+console.log('7. declarative mapping')
+const hdr = { 'x-api-key': newKey }
+r = await api('GET', '/api/tally-sync/mapping', undefined, hdr)
+check('mapping served with version + hash', r.status === 200 && r.body.version === '1' && /^[0-9a-f]{64}$/.test(r.body.hash) && r.body.mapping.sales.default === 'Sales', r.body)
+check('agent already uses backend mapping', agent.mappingSource === 'backend' && agent.mappingCache?.hash === r.body.hash, agent.mappingSource)
+r = await api('GET', '/api/tally-sync/mapping')
+check('mapping endpoint needs API key', r.status === 401)
+const rich: any = {
+  version: '2',
+  sales: { default: 'Sales', rules: [{ gstRate: 5, supply: 'local', ledger: 'Sales 5% Local' }, { supply: 'interstate', ledger: 'Sales Interstate' }] },
+  tax: { cgst: 'CGST', sgst: 'SGST', igst: 'IGST', byRate: { '5': { cgst: 'CGST 2.5%', sgst: 'SGST 2.5%', igst: 'IGST 5%' } } },
+  roundOff: { enabled: true, ledger: 'Round Off', mode: 'nearest', precision: 1 },
+  autoCreate: { parties: false, ledgers: false, items: false }
+}
+writeMapping(rich)
+const inv1 = { number: 'INV-2001', date: '20260420', party: 'New Customer', taxMode: 'intra', lines: [{ item: 'Widget', qty: 2, rate: 100.25, gstRate: 18 }, { item: 'Gadget', qty: 1, rate: 99.99, gstRate: 5 }] }
+r = await api('POST', '/api/records', { entity: 'sales', payload: inv1 }); const inv1Id = r.body.id
+c = await agent.cycle()
+r = await api('GET', '/api/tally-sync/mapping', undefined, hdr)
+check('mapping change picked up without restart', agent.mappingCache?.version === '2' && agent.mappingCache?.hash === r.body.hash, agent.mappingCache?.version)
+r = await api('GET', '/api/mapping')
+const iss = r.body.validation?.issues ?? []
+check('missing ledgers reported to backend', ['Sales 5% Local', 'Sales Interstate', 'CGST 2.5%', 'Round Off'].every((n) => iss.some((i: any) => i.name === n && i.kind === 'ledger' && i.level === 'error')), iss)
+check('validation hash matches served mapping', r.body.validation.hash === r.body.hash && !r.body.validation.ok)
+r = await api('GET', `/api/records/${inv1Id}`)
+check('record fails with clear message when autoCreate off', r.body.status === 'failed' && /Party ledger 'New Customer' not found.*autoCreate\.parties/.test(r.body.error ?? ''), r.body.error)
+let pageRes = await fetch(base + '/mapping')
+check('mapping page renders with issues', pageRes.status === 200 && (await pageRes.text()).includes('Sales 5% Local'))
+
+writeMapping({ ...rich, version: '3', autoCreate: { parties: true, ledgers: true, items: false } })
+await api('POST', `/api/records/${inv1Id}/retry`)
+const inv2 = { number: 'INV-2002', date: '20260421', party: 'Ravi Stores', taxMode: 'inter', lines: [{ item: 'Widget', qty: 1, rate: 100, gstRate: 18 }] }
+r = await api('POST', '/api/records', { entity: 'sales', payload: inv2 }); const inv2Id = r.body.id
+c = await agent.cycle({ forcePull: true })
+check('v3 picked up', agent.mappingCache?.version === '3')
+r = await api('GET', `/api/records/${inv1Id}`)
+check('INV-2001 synced after autoCreate', r.body.status === 'synced', r.body.error)
+r = await api('GET', `/api/records/${inv2Id}`)
+check('INV-2002 (interstate) synced', r.body.status === 'synced', r.body.error)
+r = await api('GET', '/api/data/ledger')
+const led = new Map(r.body.map((l: any) => [l.name, l]))
+check('party auto-created under Sundry Debtors', (led.get('New Customer') as any)?.parent === 'Sundry Debtors', led.get('New Customer'))
+check('ledgers auto-created under configured groups', (led.get('Sales 5% Local') as any)?.parent === 'Sales Accounts' && (led.get('CGST 2.5%') as any)?.parent === 'Duties & Taxes' && (led.get('Round Off') as any)?.parent === 'Indirect Expenses', ['Sales 5% Local', 'CGST 2.5%', 'Round Off'].map((n) => led.get(n)))
+r = await api('GET', '/api/reports/vouchers?category=sales')
+const v1 = r.body.find((v: any) => v.voucherNumber === 'INV-2001')
+const v2 = r.body.find((v: any) => v.voucherNumber === 'INV-2002')
+const amt = (v: any, n: string) => (v?.ledgerEntries ?? []).filter((e: any) => e.ledger === n).reduce((s: number, e: any) => s + e.amount, 0)
+const r2 = (n: number) => Math.round(n * 100) / 100
+check('per-rate sales ledger split (18% -> Sales, 5% -> Sales 5% Local)', r2(amt(v1, 'Sales')) === 200.5 && r2(amt(v1, 'Sales 5% Local')) === 99.99, v1?.ledgerEntries)
+check('per-rate tax ledgers (CGST 9% on 18%, CGST 2.5% on 5%)', r2(amt(v1, 'CGST')) === 18.05 && r2(amt(v1, 'CGST 2.5%')) === 2.5 && r2(amt(v1, 'SGST 2.5%')) === 2.5, v1?.ledgerEntries)
+const nonAlloc = (v: any) => (v?.ledgerEntries ?? []).filter((e: any) => e.source !== 'accounting_allocation')
+const sum1 = r2(nonAlloc(v1).reduce((s: number, e: any) => s + e.amount, 0) + (v1?.ledgerEntries ?? []).filter((e: any) => e.source === 'accounting_allocation').reduce((s: number, e: any) => s + e.amount, 0))
+check('round-off posted, party total rounded, voucher balanced', v1?.amount === 342 && r2(amt(v1, 'Round Off')) === 0.41 && sum1 === 0, { amount: v1?.amount, ro: amt(v1, 'Round Off'), sum1, e: v1?.ledgerEntries })
+check('interstate -> IGST + Sales Interstate, no CGST', r2(amt(v2, 'IGST')) === 18 && r2(amt(v2, 'Sales Interstate')) === 100 && !amt(v2, 'CGST') && v2?.amount === 118, v2?.ledgerEntries)
+
+writeMapping({ ...rich, version: 'broken', sales: { rules: [] } })
+c = await agent.cycle()
+check('invalid mapping rejected, agent keeps last good copy', agent.mappingCache?.version === '3' && agent.mappingSource === 'cache', agent.mappingSource)
+r = await api('GET', '/api/mapping')
+check('UI shows schema error', r.body.ok === false && r.body.errors.some((e: string) => /sales\.default/.test(e)), r.body.errors)
+fs.copyFileSync(path.join(root, 'apps/web/config/tally-mapping.jsonc'), mappingFile); { const t = new Date(Date.now() + 60_000); fs.utimesSync(mappingFile, t, t) }
+r = await api('GET', '/api/tally-sync/mapping', undefined, hdr)
+check('shipped JSONC config parses', r.status === 200 && r.body.mapping.groups.customers === 'Sundry Debtors', r.body)
 
 cleanup()
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -339,7 +339,7 @@ export class MockTally {
   private renderLookup(o: MockObj): string {
     const extra = o.tag === 'VOUCHER'
       ? `<DATE TYPE="Date">${o.date}</DATE><VOUCHERTYPENAME TYPE="String">${esc(o.vchType)}</VOUCHERTYPENAME><VOUCHERNUMBER TYPE="String">${esc(o.vchNumber)}</VOUCHERNUMBER>`
-      : `<NAME TYPE="String">${esc(o.name)}</NAME>`
+      : `<NAME TYPE="String">${esc(o.name)}</NAME><PARENT TYPE="String">${esc(firstTagText(o.xml, "PARENT") ?? "")}</PARENT>`
     const attr = o.tag === 'VOUCHER' ? `REMOTEID="${o.guid}" VCHTYPE="${esc(o.vchType)}"` : `NAME="${esc(o.name)}" RESERVEDNAME="${esc(o.reserved ?? '')}"`
     return `    <${o.tag} ${attr}><GUID TYPE="String">${o.guid}</GUID><MASTERID TYPE="Number"> ${o.masterid}</MASTERID><ALTERID TYPE="Number"> ${o.alterid}</ALTERID>${extra}</${o.tag}>`
   }

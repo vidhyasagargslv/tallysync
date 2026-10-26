@@ -40,7 +40,13 @@ export interface StockItemInput {
 }
 export type MasterInput = GroupInput | LedgerInput | UnitInput | StockGroupInput | GodownInput | StockItemInput
 
-export interface VoucherLine { item: string; qty: number; rate: number; godown?: string; unit?: string; gstRate?: number }
+export interface TaxLedgerNames { cgst: string; sgst: string; igst: string }
+export interface VoucherLine {
+  item: string; qty: number; rate: number; godown?: string; unit?: string; gstRate?: number
+  ledger?: string // sales / purchase ledger for this line (rule-based); falls back to VoucherInput.account
+  taxLedgers?: TaxLedgerNames // per-rate tax ledgers; falls back to VoucherInput.taxLedgers
+}
+export interface RoundOffInput { enabled: boolean; ledger: string; mode: 'nearest' | 'up' | 'down'; precision: number }
 export interface VoucherInput {
   kind: VoucherKind
   number: string
@@ -55,7 +61,8 @@ export interface VoucherInput {
   narration?: string
   reference?: string
   dueDate?: string
-  voucherTypeName?: string // tenant mapping override
+  voucherTypeName?: string // mapping override
+  roundOff?: RoundOffInput
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100
@@ -213,6 +220,48 @@ export function computeTotals(v: VoucherInput): VoucherTotals {
   return { lines, taxable, cgst, sgst, igst, total: r2(taxable + cgst + sgst + igst) }
 }
 
+export interface VoucherPostings {
+  lines: Array<VoucherLine & { amount: number; ledger: string }>
+  taxable: number
+  tax: Array<{ ledger: string; head: 'cgst' | 'sgst' | 'igst'; amount: number }>
+  roundOff: { ledger: string; amount: number } | null
+  total: number // party amount (after rounding)
+}
+
+/** Every posting of an inventory voucher: per-line ledgers, tax per ledger, round-off. Sums balance exactly. */
+export function voucherPostings(v: VoucherInput): VoucherPostings {
+  const isSaleSide = v.kind === 'sales' || v.kind === 'sales_order'
+  const account = v.account ?? (isSaleSide ? 'Sales' : 'Purchase')
+  const defTax = v.taxLedgers ?? { cgst: 'CGST', sgst: 'SGST', igst: 'IGST' }
+  const lines = (v.lines ?? []).map((l) => ({ ...l, amount: r2(l.qty * l.rate), ledger: l.ledger ?? account }))
+  const taxable = r2(lines.reduce((s, l) => s + l.amount, 0))
+  const acc = new Map<string, { ledger: string; head: 'cgst' | 'sgst' | 'igst'; amount: number }>()
+  const add = (ledger: string, head: 'cgst' | 'sgst' | 'igst', a: number) => {
+    const k = `${head}\u0000${ledger}`
+    const e = acc.get(k) ?? { ledger, head, amount: 0 }
+    e.amount += a; acc.set(k, e)
+  }
+  for (const l of lines) {
+    const rate = l.gstRate ?? 0
+    if (!rate) continue
+    const tl = l.taxLedgers ?? defTax
+    if (v.taxMode === 'intra') { add(tl.cgst, 'cgst', (l.amount * rate) / 200); add(tl.sgst, 'sgst', (l.amount * rate) / 200) }
+    else if (v.taxMode === 'inter') add(tl.igst, 'igst', (l.amount * rate) / 100)
+  }
+  const tax = [...acc.values()].map((t) => ({ ...t, amount: r2(t.amount) })).filter((t) => t.amount)
+  const gross = r2(taxable + tax.reduce((s, t) => s + t.amount, 0))
+  let total = gross
+  let roundOff: VoucherPostings['roundOff'] = null
+  if (v.roundOff?.enabled) {
+    const q = gross / v.roundOff.precision
+    const n = v.roundOff.mode === 'up' ? Math.ceil(q - 1e-9) : v.roundOff.mode === 'down' ? Math.floor(q + 1e-9) : Math.round(q)
+    total = r2(n * v.roundOff.precision)
+    const diff = r2(total - gross)
+    if (diff) roundOff = { ledger: v.roundOff.ledger, amount: diff }
+  }
+  return { lines, taxable, tax, roundOff, total }
+}
+
 function ledgerEntry(ledger: string, deemedPositive: boolean, amount: number, extra = '') {
   return `<LEDGERENTRIES.LIST><LEDGERNAME>${esc(ledger)}</LEDGERNAME><ISDEEMEDPOSITIVE>${deemedPositive ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE><AMOUNT>${amt(amount)}</AMOUNT>${extra}</LEDGERENTRIES.LIST>`
 }
@@ -250,11 +299,11 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
   if (isInventory) {
     head.push(`<ISINVOICE>${isOrder ? 'No' : 'Yes'}</ISINVOICE>`)
     if (isOrder) head.push(`<BASICORDERREF>${esc(v.number)}</BASICORDERREF>`)
-    const account = v.account ?? (isSaleSide ? 'Sales' : 'Purchase')
+    const p = voucherPostings(v)
     // sale side: stock goes out (credit, positive); purchase side: stock comes in (debit, negative)
     const sign = isSaleSide ? 1 : -1
     const deemed = !isSaleSide
-    for (const l of t.lines) {
+    for (const l of p.lines) {
       const unit = l.unit ?? 'Nos'
       const godown = l.godown || 'Main Location'
       const orderBits = isOrder
@@ -264,19 +313,17 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
         `<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>${esc(l.item)}</STOCKITEMNAME><ISDEEMEDPOSITIVE>${deemed ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE>` +
           `<RATE>${amt(l.rate)}/${esc(unit)}</RATE><AMOUNT>${amt(sign * l.amount)}</AMOUNT><ACTUALQTY>${qtyStr(l.qty, unit)}</ACTUALQTY><BILLEDQTY>${qtyStr(l.qty, unit)}</BILLEDQTY>` +
           `<BATCHALLOCATIONS.LIST><GODOWNNAME>${esc(godown)}</GODOWNNAME><BATCHNAME>Primary Batch</BATCHNAME>${orderBits}<AMOUNT>${amt(sign * l.amount)}</AMOUNT><ACTUALQTY>${qtyStr(l.qty, unit)}</ACTUALQTY><BILLEDQTY>${qtyStr(l.qty, unit)}</BILLEDQTY></BATCHALLOCATIONS.LIST>` +
-          `<ACCOUNTINGALLOCATIONS.LIST><LEDGERNAME>${esc(account)}</LEDGERNAME><ISDEEMEDPOSITIVE>${deemed ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE><AMOUNT>${amt(sign * l.amount)}</AMOUNT></ACCOUNTINGALLOCATIONS.LIST>` +
+          `<ACCOUNTINGALLOCATIONS.LIST><LEDGERNAME>${esc(l.ledger)}</LEDGERNAME><ISDEEMEDPOSITIVE>${deemed ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE><AMOUNT>${amt(sign * l.amount)}</AMOUNT></ACCOUNTINGALLOCATIONS.LIST>` +
           `</ALLINVENTORYENTRIES.LIST>`
       )
     }
     const bill = isOrder
       ? ''
-      : `<BILLALLOCATIONS.LIST><NAME>${esc(v.number)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${amt(-sign * t.total)}</AMOUNT></BILLALLOCATIONS.LIST>`
+      : `<BILLALLOCATIONS.LIST><NAME>${esc(v.number)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${amt(-sign * p.total)}</AMOUNT></BILLALLOCATIONS.LIST>`
     // party: sale = debit (negative), purchase = credit (positive)
-    body.push(ledgerEntry(v.party, isSaleSide, -sign * t.total, `<ISPARTYLEDGER>Yes</ISPARTYLEDGER>${bill}`))
-    const tl = v.taxLedgers ?? { cgst: 'CGST', sgst: 'SGST', igst: 'IGST' }
-    if (t.cgst) body.push(ledgerEntry(tl.cgst, deemed, sign * t.cgst))
-    if (t.sgst) body.push(ledgerEntry(tl.sgst, deemed, sign * t.sgst))
-    if (t.igst) body.push(ledgerEntry(tl.igst, deemed, sign * t.igst))
+    body.push(ledgerEntry(v.party, isSaleSide, -sign * p.total, `<ISPARTYLEDGER>Yes</ISPARTYLEDGER>${bill}`))
+    for (const t of p.tax) body.push(ledgerEntry(t.ledger, deemed, sign * t.amount))
+    if (p.roundOff) { const a = sign * p.roundOff.amount; body.push(ledgerEntry(p.roundOff.ledger, a < 0, a)) }
   } else {
     const cash = v.cashLedger ?? 'Cash'
     const receipt = v.kind === 'receipt'

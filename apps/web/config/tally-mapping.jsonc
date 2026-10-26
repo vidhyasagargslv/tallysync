@@ -1,0 +1,63 @@
+// TallySync mapping: where every record lands in Tally. Served to the agent by GET /api/tally-sync/mapping.
+// Edit and save: the agent picks it up on its next cycle (no restart). Every key is optional (defaults shown in
+// packages/contracts/src/mapping.ts). Ledger/group names must match Tally exactly (case-insensitive).
+{
+  "version": "1",
+
+  // Voucher type names per kind (rename if the company uses e.g. "GST Sales")
+  "voucherTypes": {
+    "sales_order": "Sales Order", "sales": "Sales",
+    "purchase_order": "Purchase Order", "purchase": "Purchase",
+    "receipt": "Receipt", "payment": "Payment"
+  },
+
+  // Sales ledger per line. Order: items > itemGroups > rules (first match) > default.
+  // Rule conditions (all optional): gstRate, supply ("local" | "interstate"), itemGroup, item.
+  "sales": {
+    "default": "Sales",
+    "rules": [
+      // { "gstRate": 18, "supply": "local", "ledger": "Sales 18% Local" },
+      // { "supply": "interstate", "ledger": "Sales Interstate" }
+    ],
+    "itemGroups": {},   // { "Services": "Service Income" }
+    "items": {}         // { "Installation": "Service Income" }
+  },
+
+  // Purchase ledger per line, same rules as sales
+  "purchase": { "default": "Purchase", "rules": [] },
+
+  // Output GST ledgers (sales side). byRate overrides per GST rate.
+  "tax": {
+    "cgst": "CGST", "sgst": "SGST", "igst": "IGST",
+    "byRate": {}        // { "5": { "cgst": "CGST 2.5%", "sgst": "SGST 2.5%", "igst": "IGST 5%" } }
+  },
+  // Input GST ledgers (purchase side). Remove to reuse "tax".
+  // "purchaseTax": { "cgst": "Input CGST", "sgst": "Input SGST", "igst": "Input IGST" },
+
+  // Round the invoice total and post the difference to this ledger (voucher stays balanced)
+  "roundOff": { "enabled": false, "ledger": "Round Off", "mode": "nearest", "precision": 1 },
+
+  // Cash / bank ledger for receipts and payments
+  "cashBank": { "receipt": "Cash", "payment": "Cash" },
+
+  "defaultGodown": "Main Location",
+
+  // Groups for auto-created masters
+  "groups": {
+    "customers": "Sundry Debtors", "suppliers": "Sundry Creditors",
+    "salesLedgers": "Sales Accounts", "purchaseLedgers": "Purchase Accounts",
+    "taxLedgers": "Duties & Taxes", "roundOff": "Indirect Expenses",
+    "items": "",            // stock group for new items ("" = Primary)
+    "defaultUnit": "Nos"
+  },
+
+  // Create missing masters in Tally before pushing a voucher (otherwise the record fails with a clear message)
+  "autoCreate": { "parties": false, "ledgers": false, "items": false },
+
+  // Rename app-side names to Tally names
+  "names": {
+    "parties": {},          // { "Ravi": "Ravi Stores" }
+    "items": {},
+    "units": {}             // { "pcs": "Nos" }
+  }
+}

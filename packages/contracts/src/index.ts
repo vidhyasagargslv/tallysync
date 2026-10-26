@@ -73,20 +73,6 @@ export const TrialBalanceRowZ = z.object({ ledger: z.string(), group: z.string()
 // ---------------------------------------------------------------------------
 // Mapping + sync settings (kept locally by the agent)
 // ---------------------------------------------------------------------------
-export const MappingZ = z.object({
-  voucherTypes: z.record(z.enum(VOUCHER_KINDS), z.string()).default({}),
-  ledgers: z.object({
-    sales: z.string().default('Sales'), purchase: z.string().default('Purchase'),
-    cgst: z.string().default('CGST'), sgst: z.string().default('SGST'), igst: z.string().default('IGST'),
-    cash: z.string().default('Cash'), roundOff: z.string().optional()
-  }).default({}),
-  defaultGodown: z.string().default('Main Location'),
-  units: z.record(z.string(), z.string()).default({}),
-  items: z.record(z.string(), z.string()).default({}),
-  parties: z.record(z.string(), z.string()).default({}),
-  confirmed: z.boolean().default(false)
-})
-export type Mapping = z.infer<typeof MappingZ>
 export const DEFAULT_VOUCHER_TYPES: Record<VoucherKind, string> = {
   sales_order: 'Sales Order', sales: 'Sales', purchase_order: 'Purchase Order', purchase: 'Purchase', receipt: 'Receipt', payment: 'Payment'
 }
@@ -149,6 +135,9 @@ export const HeartbeatZ = z.object({
   tallyReachable: z.boolean(), companyState: CompanyStateZ,
   lockedCompany: CompanyLinkZ.nullable(), openCompanies: z.array(CompanyLinkZ),
   lastPullAt: z.string().nullable(), lastPushAt: z.string().nullable(), lastError: z.string().nullable(),
-  enabledPulls: z.array(z.enum(PULL_ENTITIES)), recentErrors: z.array(z.string()).default([])
+  enabledPulls: z.array(z.enum(PULL_ENTITIES)), recentErrors: z.array(z.string()).default([]),
+  mapping: z.object({ source: z.enum(['backend', 'cache', 'local']), hash: z.string().nullable(), version: z.string().nullable(), issues: z.number().int() }).optional()
 })
 export type Heartbeat = z.infer<typeof HeartbeatZ>
+
+export * from './mapping.js'

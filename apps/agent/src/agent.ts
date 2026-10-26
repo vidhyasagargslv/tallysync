@@ -6,10 +6,10 @@
 import os from 'node:os'
 import path from 'node:path'
 import {
-  CONTRACT_VERSION, MappingZ, OBJECT_ENTITIES, PULL_ENTITIES, defaultSyncSettings,
-  type CompanyLink, type CompanyState, type Heartbeat, type Mapping, type PendingRecord, type PullEntity, type PushResult, type SyncSettings
+  CONTRACT_VERSION, MappingResponseZ, MappingZ, OBJECT_ENTITIES, PULL_ENTITIES, VoucherZ, defaultSyncSettings, mappingReferences,
+  type MappingIssue, type MappingValidation, type CompanyLink, type CompanyState, type Heartbeat, type Mapping, type PendingRecord, type PullEntity, type PushResult, type SyncSettings
 } from '@tallysync/contracts'
-import { TallyClient, TallyEngine, TallyUnreachableError, mockConfig, type ObjectKey } from '@tallysync/tally-core'
+import { TallyClient, TallyEngine, TallyUnreachableError, isVoucher, mockConfig, toVoucherInput, voucherRequirements, type MasterIndex, type ObjectKey } from '@tallysync/tally-core'
 import { log } from './log.js'
 import { dataDir, ensureDirs, readJson, writeJsonAtomic } from './paths.js'
 import { clearApiKey, loadApiKey, saveApiKey } from './secret.js'
@@ -20,6 +20,7 @@ export interface LocalSettings {
   backendUrl: string; tallyUrl: string; tallyMode: 'real' | 'mock'; companyName: string
   lockedCompany: CompanyLink | null; sync: SyncSettings; mapping: Mapping; uiPort: number
 }
+interface MappingCache { hash: string; version: string; source: string; mapping: Mapping; fetchedAt: string }
 interface State { cursors: Partial<Record<PullEntity, number>>; lastRun: Partial<Record<PullEntity, string>>; cursorCompanyGuid?: string }
 
 export class BackendError extends Error { constructor(readonly status: number, msg: string) { super(msg) } }
@@ -38,6 +39,10 @@ export class Agent {
   lastPullAt: string | null = null
   lastPushAt: string | null = null
   recentErrors: string[] = []
+  mappingCache: MappingCache | null
+  mappingSource: 'backend' | 'cache' | 'local' = 'local'
+  lastValidation: MappingValidation | null = null
+  private lastValidationKey = ''
   private timers: NodeJS.Timeout[] = []
   private busy = false
 
@@ -59,6 +64,8 @@ export class Agent {
     if (env.TALLYSYNC_API_KEY && !loadApiKey()) saveApiKey(env.TALLYSYNC_API_KEY)
     this.state = readJson<State>(this.stateFile, { cursors: {}, lastRun: {} })
     this.apiKey = loadApiKey()
+    this.mappingCache = readJson<MappingCache | null>(path.join(this.dir, 'state', 'mapping-cache.json'), null)
+    if (this.mappingCache) this.mappingSource = 'cache'
     if (this.settings.tallyMode === 'mock' && !mockConfig.statePath) mockConfig.statePath = path.join(this.dir, 'state', 'mock-tally.json')
   }
 
@@ -165,24 +172,117 @@ export class Agent {
     return { ok: false as const, message: msg }
   }
 
+  /** Active mapping: backend file (last good copy cached on disk) > agent.json `mapping` fallback. */
+  get mapping(): Mapping { return this.mappingCache?.mapping ?? this.settings.mapping }
+
+  async refreshMapping() {
+    try {
+      const r = MappingResponseZ.parse(await this.api('GET', '/api/tally-sync/mapping', undefined, 1))
+      if (r.hash !== this.mappingCache?.hash) log('info', `mapping ${this.mappingCache ? 'changed' : 'loaded'}: version ${r.version} hash ${r.hash.slice(0, 12)} (${r.source})`)
+      this.mappingCache = { hash: r.hash, version: r.version, source: r.source, mapping: r.mapping, fetchedAt: new Date().toISOString() }
+      writeJsonAtomic(path.join(this.dir, 'state', 'mapping-cache.json'), this.mappingCache)
+      this.mappingSource = 'backend'
+    } catch (e) {
+      this.mappingSource = this.mappingCache ? 'cache' : 'local'
+      if (e instanceof BackendError && e.status === 401) throw e
+      log('warn', `mapping fetch failed (${(e as Error).message}); using ${this.mappingSource} mapping`)
+    }
+  }
+
+  /** Check every ledger/group/voucher type/godown the mapping names against Tally's masters. */
+  validateMapping(index: MasterIndex): MappingValidation {
+    const m = this.mapping
+    const issues: MappingIssue[] = []
+    for (const r of mappingReferences(m)) {
+      if (index[r.kind].has(r.name.toLowerCase())) continue
+      const canCreate = r.kind === 'ledger' && !!r.group && m.autoCreate.ledgers
+      issues.push({
+        level: canCreate ? 'warning' : 'error', kind: r.kind, name: r.name, path: r.path, autoCreate: canCreate,
+        message: `${r.kind.replace('_', ' ')} '${r.name}' (${r.path}) not found in Tally${canCreate ? `; will be auto-created under '${r.group}' when first used` : ''}`
+      })
+    }
+    return { hash: this.mappingCache?.hash ?? 'local', checkedAt: new Date().toISOString(), company: this.settings.lockedCompany?.name ?? '', ok: !issues.some((i) => i.level === 'error'), issues }
+  }
+
+  private async reportValidation(v: MappingValidation) {
+    this.lastValidation = v
+    const key = JSON.stringify([v.hash, v.issues])
+    if (key === this.lastValidationKey) return
+    try { await this.api('POST', '/api/tally-sync/mapping/validation', v, 1); this.lastValidationKey = key }
+    catch (e) { if (!(e instanceof BackendError && e.status === 404)) log('warn', `mapping validation report failed: ${(e as Error).message}`) }
+    if (v.issues.length) log('warn', `mapping: ${v.issues.length} issue(s): ${v.issues.map((i) => i.message).join(' | ')}`)
+  }
+
+  /**
+   * Make sure every master a voucher needs exists. Missing party/ledger/item is auto-created under the
+   * configured group when allowed, otherwise the record fails with a clear message.
+   */
+  private async ensureMasters(engine: TallyEngine, index: MasterIndex, payload: any): Promise<string | null> {
+    const m = this.mapping
+    const v = VoucherZ.parse(payload)
+    const input = toVoucherInput(v, m, { itemGroup: (i) => index.stock_item.get(i.toLowerCase()) || undefined })
+    const req = voucherRequirements(input)
+    const has = (k: keyof MasterIndex, n: string) => index[k].has(n.toLowerCase())
+    const problems: string[] = []
+    if (!has('voucher_type', req.voucherType)) problems.push(`Voucher type '${req.voucherType}' not found in Tally (mapping voucherTypes.${v.kind})`)
+    for (const g of req.godowns) if (!has('godown', g)) problems.push(`Godown '${g}' not found in Tally`)
+    const create = async (entity: 'ledger' | 'stock_item' | 'unit', p: any, what: string) => {
+      const r = await engine.push(entity, p, m)
+      if (r.status !== 'synced') { problems.push(`auto-create ${what} '${p.name}' failed: ${r.error}`); return }
+      index[entity].set(p.name.toLowerCase(), p.parent ?? '')
+      log('info', `auto-created ${what} '${p.name}'${p.parent ? ` under '${p.parent}'` : ''}`)
+    }
+    const saleSide = v.kind === 'sales' || v.kind === 'sales_order'
+    for (const l of req.ledgers) {
+      if (has('ledger', l.name)) continue
+      const group = l.role === 'party' ? (saleSide ? m.groups.customers : m.groups.suppliers)
+        : l.role === 'sales' ? m.groups.salesLedgers : l.role === 'purchase' ? m.groups.purchaseLedgers
+        : l.role === 'tax' ? m.groups.taxLedgers : l.role === 'roundOff' ? m.groups.roundOff : null
+      const allowed = l.role === 'party' ? m.autoCreate.parties : l.role === 'cash' ? false : m.autoCreate.ledgers
+      const flag = l.role === 'party' ? 'autoCreate.parties' : 'autoCreate.ledgers'
+      if (!allowed || !group) { problems.push(`${l.role === 'party' ? 'Party ledger' : `${l.role} ledger`} '${l.name}' not found in Tally. Create it in Tally, map it in tally-mapping.json${l.role !== 'cash' ? `, or enable ${flag}` : ''}`); continue }
+      if (!has('group', group)) { problems.push(`cannot auto-create ledger '${l.name}': group '${group}' not found in Tally`); continue }
+      const head = l.head === 'cgst' ? 'Central Tax' : l.head === 'sgst' ? 'State Tax' : l.head === 'igst' ? 'Integrated Tax' : undefined
+      await create('ledger', { name: l.name, parent: group, billWise: l.role === 'party' || undefined, gstDutyHead: head }, l.role === 'party' ? 'party ledger' : 'ledger')
+    }
+    for (const item of req.items) {
+      if (has('stock_item', item)) continue
+      if (!m.autoCreate.items) { problems.push(`Stock item '${item}' not found in Tally. Create it, map it in names.items, or enable autoCreate.items`); continue }
+      if (!has('unit', m.groups.defaultUnit)) await create('unit', { name: m.groups.defaultUnit }, 'unit')
+      if (m.groups.items && !has('stock_group', m.groups.items)) { problems.push(`cannot auto-create item '${item}': stock group '${m.groups.items}' not found`); continue }
+      await create('stock_item', { name: item, parent: m.groups.items || undefined, baseUnit: m.groups.defaultUnit }, 'stock item')
+    }
+    return problems.length ? problems.join('; ') : null
+  }
+
   async heartbeat() {
     const hb: Heartbeat = {
       agentVersion: AGENT_VERSION, contractVersion: CONTRACT_VERSION, machine: os.hostname(), tallyUrl: this.settings.tallyUrl, tallyMode: this.settings.tallyMode,
       tallyReachable: this.tallyReachable, companyState: this.companyState, lockedCompany: this.settings.lockedCompany, openCompanies: this.openCompanies,
       lastPullAt: this.lastPullAt, lastPushAt: this.lastPushAt, lastError: this.lastError,
-      enabledPulls: PULL_ENTITIES.filter((e) => this.settings.sync.pull[e]?.enabled), recentErrors: this.recentErrors.slice(-10)
+      enabledPulls: PULL_ENTITIES.filter((e) => this.settings.sync.pull[e]?.enabled), recentErrors: this.recentErrors.slice(-10),
+      mapping: { source: this.mappingSource, hash: this.mappingCache?.hash ?? null, version: this.mappingCache?.version ?? null, issues: this.lastValidation?.issues.length ?? 0 }
     }
     await this.api('POST', '/api/tally-sync/status', hb, 1)
   }
 
   // ---------------------------------------------------------------- push
-  async pushPending(engine: TallyEngine): Promise<number> {
+  async pushPending(engine: TallyEngine, index: MasterIndex): Promise<number> {
     const recs = await this.api<PendingRecord[]>('GET', '/api/tally-sync/pending?limit=25')
     let n = 0
     for (const rec of recs) {
       if (this.settings.sync.push[rec.entity]?.enabled === false) continue
-      const r = await engine.push(rec.entity, rec.payload, this.settings.mapping)
-      const res: PushResult = { id: rec.id, ...r, transient: r.status === 'failed' && /Cannot reach Tally/.test(r.error ?? '') }
+      let res: PushResult
+      const problem = isVoucher(rec.entity) ? await this.ensureMasters(engine, index, { ...rec.payload, kind: rec.entity }).catch((e) => `invalid record: ${(e as Error).message}`) : null
+      if (problem) res = { id: rec.id, status: 'failed', error: problem }
+      else {
+        const r = await engine.push(rec.entity, rec.payload, this.mapping, { itemGroup: (i) => index.stock_item.get(i.toLowerCase()) || undefined })
+        res = { id: rec.id, ...r, transient: r.status === 'failed' && /Cannot reach Tally/.test(r.error ?? '') }
+        if (r.status === 'synced' && !isVoucher(rec.entity)) {
+          const k = rec.entity as keyof MasterIndex
+          if (index[k]) index[k].set(String(rec.payload.name).toLowerCase(), String(rec.payload.parent ?? ''))
+        }
+      }
       await this.api('POST', '/api/tally-sync/result', res)
       log(res.status === 'synced' ? 'info' : 'warn', `push ${rec.entity} ${rec.id}: ${res.status}${res.action ? ` ${res.action}` : ''}${res.error ? ` - ${res.error}` : ''}`)
       if (res.status === 'failed') this.noteError(`push ${rec.entity} ${rec.id}: ${res.error}`)
@@ -243,7 +343,10 @@ export class Agent {
       const pulled: PullEntity[] = []
       if (gate.ok) {
         this.lastError = null
-        pushed = await this.pushPending(gate.engine!)
+        await this.refreshMapping()
+        const index = await gate.engine!.masterIndex()
+        await this.reportValidation(this.validateMapping(index))
+        pushed = await this.pushPending(gate.engine!, index)
         for (const e of this.dueEntities(opts.forcePull)) { await this.pullEntity(gate.engine!, e, opts.full); pulled.push(e) }
       }
       try { await this.heartbeat() } catch (e) { log('warn', `heartbeat failed: ${(e as Error).message}`) }
