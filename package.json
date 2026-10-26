@@ -1,0 +1,35 @@
+{
+  "name": "tallysync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @tallysync/web && npm run build -w @tallysync/agent",
+    "build:exe": "npm run build:exe -w @tallysync/agent",
+    "dev:web": "npm run dev -w @tallysync/web",
+    "start:web": "npm run start -w @tallysync/web",
+    "dev:agent": "npm run dev -w @tallysync/agent",
+    "test": "npm run build -w @tallysync/web && tsx scripts/e2e.ts",
+    "test:e2e": "tsx scripts/e2e.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
+  }
+}

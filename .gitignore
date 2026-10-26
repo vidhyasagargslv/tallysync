@@ -1,0 +1,14 @@
+node_modules
+dist
+data
+*.db
+*.db-*
+.env
+apps/agent/release
+apps/agent/.cache
+.e2e
+apps/agent/packaging/bin
+.next
+apps/web/data
+apps/web/next-env.d.ts
+*.tsbuildinfo

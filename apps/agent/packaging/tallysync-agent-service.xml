@@ -1,0 +1,21 @@
+<!-- WinSW service definition. WinSW-x64.exe is renamed to tallysync-agent-service.exe next to this file. -->
+<service>
+  <id>TallySyncAgent</id>
+  <name>TallySync Agent</name>
+  <description>Syncs TallyPrime with your backend (outbound HTTPS only).</description>
+  <executable>%BASE%\tallysync-agent.exe</executable>
+  <workingdirectory>%BASE%</workingdirectory>
+  <env name="TALLYSYNC_HOME" value="%ProgramData%\TallySync"/>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <onfailure action="restart" delay="60 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>15 sec</stoptimeout>
+  <log mode="roll-by-size">
+    <sizeThreshold>5120</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+  <logpath>%ProgramData%\TallySync\logs</logpath>
+</service>

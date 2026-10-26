@@ -1,0 +1,13 @@
+{
+  "name": "@tallysync/agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "node build.mjs",
+    "build:exe": "node build.mjs --exe",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": { "@tallysync/contracts": "*", "@tallysync/tally-core": "*" }
+}

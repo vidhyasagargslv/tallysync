@@ -1,0 +1,15 @@
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#1d2433;background:#f5f7fb}
+a{color:#2457c5;text-decoration:none}a:hover{text-decoration:underline}
+.shell{display:flex;min-height:100vh}.nav{width:210px;background:#14213d;color:#fff;padding:18px 12px;flex-shrink:0}.nav h1{font-size:18px;margin:0 0 18px 8px}
+.nav a{display:block;color:#cdd6ea;padding:7px 8px;border-radius:6px;font-size:14px}.nav a:hover{background:#22325a;text-decoration:none;color:#fff}
+.nav .sec{font-size:11px;text-transform:uppercase;color:#7d8bab;margin:14px 8px 4px}
+main{flex:1;padding:24px 28px;max-width:1300px;overflow-x:auto}h2{margin:0 0 16px}h3{margin:18px 0 8px}
+.card{background:#fff;border:1px solid #e3e8f0;border-radius:10px;padding:16px;margin-bottom:16px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:16px}.stat{background:#fff;border:1px solid #e3e8f0;border-radius:10px;padding:12px}.stat b{font-size:22px;display:block}
+table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid #edf0f5;vertical-align:top}th{background:#f0f3f9;font-weight:600}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600}.pending,.in_progress{background:#fff4d6;color:#8a6100}.synced,.matched,.ok{background:#dcf5e3;color:#11692f}.failed,.mismatch,.error,.blocked,.not_open,.unreachable,.offline{background:#fde2e2;color:#9b1c1c}.unconfigured{background:#eee;color:#555}
+input,select,textarea{padding:7px 8px;border:1px solid #cbd3e1;border-radius:6px;font-size:14px;background:#fff}button{padding:7px 14px;border:0;border-radius:6px;background:#2457c5;color:#fff;font-size:14px;cursor:pointer}button.secondary{background:#e7ecf5;color:#1d2433}button:disabled{opacity:.5}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.row label{display:flex;flex-direction:column;font-size:12px;gap:3px;color:#56607a}
+pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font-size:12px;max-height:600px}.muted{color:#6b7488;font-size:13px}.err{color:#9b1c1c;font-size:12px}
+.tabs a{margin-right:12px;font-size:14px}.tabs a.on{font-weight:700}
