@@ -32,7 +32,7 @@ other GUIDs with 409. To switch company on purpose: "Reset company link" in the 
 ```bash
 npm install && npm approve-scripts esbuild better-sqlite3
 cp apps/web/.env.example apps/web/.env       # API key + SQLite path
-npm test                                     # builds the web app + 65-check e2e in mock mode
+npm test                                     # builds the web app + 85-check e2e in mock mode
 npm run dev:web                              # http://localhost:3000
 # second terminal: agent against mock Tally
 TALLY_MODE=mock TALLYSYNC_HOME=./data/agent TALLYSYNC_BACKEND_URL=http://localhost:3000 \
@@ -61,6 +61,13 @@ Data on Windows: `%ProgramData%\TallySync` (`agent.json` settings, `apikey.dpapi
 LocalMachine, `state\`, `logs\agent.log`). Send `logs\agent.log` when something fails.
 
 CLI: `tallysync-agent.exe --version`, `configure --backend URL --key KEY --company "Name" [--tally URL]`, `sync-once`.
+
+## Creating data in the app
+Create (pushes to Tally): **Customers** (ledger under `groups.customers`), **Suppliers** (`groups.suppliers`), **Items**
+(unit, stock group, HSN/SAC, GST rate, opening stock per godown), **Sales Orders**, **Purchase Orders**. Every save queues a
+record (pending -> synced/failed, error, Retry, request/response XML). Edits (`PUT /api/records/:id`; name/number fixed)
+push as Alter. Order pickers merge local masters with masters pulled from Tally. A voucher that uses a local master not yet
+synced waits ("waiting for ...") until that master syncs; masters always go before vouchers.
 
 ## Tally mapping (declarative config)
 Where sales, purchases, taxes, round-off and auto-created masters go is defined in one file:

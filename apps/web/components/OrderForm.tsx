@@ -5,7 +5,11 @@ import { useState } from 'react'
 interface Line { item: string; qty: string; rate: string; godown: string; gstRate: string }
 const empty: Line = { item: '', qty: '1', rate: '0', godown: '', gstRate: '18' }
 
-export function OrderForm({ kind, defaultNumber, parties, items, godowns }: { kind: 'sales_order' | 'purchase_order'; defaultNumber: string; parties: string[]; items: string[]; godowns: string[] }) {
+export interface Pick { name: string; source: 'local' | 'tally' | 'both'; status?: string; detail?: string; gstRate?: number | null; unit?: string | null }
+const label = (p: Pick) => [p.source === 'local' ? `local (${p.status})` : p.source === 'both' ? 'in Tally + local' : 'from Tally', p.detail, p.gstRate != null ? `GST ${p.gstRate}%` : ''].filter(Boolean).join(' | ')
+
+export function OrderForm({ kind, defaultNumber, parties, items, godowns }: { kind: 'sales_order' | 'purchase_order'; defaultNumber: string; parties: Pick[]; items: Pick[]; godowns: string[] }) {
+  const itemMap = new Map(items.map((i) => [i.name.toLowerCase(), i]))
   const router = useRouter()
   const today = new Date().toISOString().slice(0, 10)
   const [number, setNumber] = useState(defaultNumber)
@@ -35,13 +39,13 @@ export function OrderForm({ kind, defaultNumber, parties, items, godowns }: { ki
   return (
     <form className="card" onSubmit={submit}>
       <h3 style={{ marginTop: 0 }}>New {kind === 'sales_order' ? 'sales order' : 'purchase order'}</h3>
-      <datalist id="parties">{parties.map((p) => <option key={p} value={p} />)}</datalist>
-      <datalist id="items">{items.map((p) => <option key={p} value={p} />)}</datalist>
+      <datalist id="parties">{parties.map((p) => <option key={p.name} value={p.name} label={label(p)} />)}</datalist>
+      <datalist id="items">{items.map((p) => <option key={p.name} value={p.name} label={label(p)} />)}</datalist>
       <datalist id="godowns">{godowns.map((p) => <option key={p} value={p} />)}</datalist>
       <div className="row">
         <label>Number<input value={number} onChange={(e) => setNumber(e.target.value)} required /></label>
         <label>Date<input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></label>
-        <label>Party ledger<input list="parties" value={party} onChange={(e) => setParty(e.target.value)} required style={{ width: 220 }} /></label>
+        <label>{kind === 'sales_order' ? 'Customer' : 'Supplier'} ({parties.length})<input list="parties" value={party} placeholder="search" onChange={(e) => setParty(e.target.value)} required style={{ width: 240 }} /></label>
         <label>GST<select value={taxMode} onChange={(e) => setTaxMode(e.target.value)}><option value="intra">Intra-state (CGST+SGST)</option><option value="inter">Inter-state (IGST)</option><option value="none">No GST</option></select></label>
         <label>Narration<input value={narration} onChange={(e) => setNarration(e.target.value)} /></label>
       </div>
@@ -49,7 +53,10 @@ export function OrderForm({ kind, defaultNumber, parties, items, godowns }: { ki
         <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Godown</th><th>GST %</th><th className="num">Amount</th><th /></tr></thead>
         <tbody>{lines.map((l, i) => (
           <tr key={i}>
-            <td><input list="items" value={l.item} onChange={(e) => set(i, 'item', e.target.value)} required={i === 0} /></td>
+            <td><input list="items" value={l.item} placeholder="search items" onChange={(e) => {
+              const it = itemMap.get(e.target.value.toLowerCase())
+              setLines(lines.map((x, j) => (j === i ? { ...x, item: e.target.value, ...(it?.gstRate != null ? { gstRate: String(it.gstRate) } : {}) } : x)))
+            }} required={i === 0} />{itemMap.get(l.item.toLowerCase())?.status && itemMap.get(l.item.toLowerCase())!.status !== 'synced' && <div className="muted">not in Tally yet - order waits for it</div>}</td>
             <td><input type="number" step="any" min="0" value={l.qty} onChange={(e) => set(i, 'qty', e.target.value)} style={{ width: 80 }} /></td>
             <td><input type="number" step="any" min="0" value={l.rate} onChange={(e) => set(i, 'rate', e.target.value)} style={{ width: 100 }} /></td>
             <td><input list="godowns" value={l.godown} onChange={(e) => set(i, 'godown', e.target.value)} placeholder="Main Location" /></td>

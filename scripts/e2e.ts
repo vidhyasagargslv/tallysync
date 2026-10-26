@@ -239,6 +239,69 @@ fs.copyFileSync(path.join(root, 'apps/web/config/tally-mapping.jsonc'), mappingF
 r = await api('GET', '/api/tally-sync/mapping', undefined, hdr)
 check('shipped JSONC config parses', r.status === 200 && r.body.mapping.groups.customers === 'Sundry Debtors', r.body)
 
+console.log('8. customers, suppliers, items from the app')
+const cust = { name: 'Kiran Traders', parent: 'Sundry Debtors', billWise: true, gstRegistrationType: 'Regular', gstin: '29KIRAN1234F1Z5', state: 'Karnataka', address: '12 MG Road, Bengaluru', pincode: '560001', phone: '9876543210', email: 'kiran@example.com', openingBalance: 500 }
+const supp = { name: 'Metro Wholesale', parent: 'Sundry Creditors', billWise: true, gstRegistrationType: 'Regular', gstin: '29METRO1234F1Z5', state: 'Karnataka' }
+const bolt = { name: 'Bolt', parent: 'Finished Goods', baseUnit: 'Nos', hsn: '7318', gstRate: 12, typeOfSupply: 'Goods', openingBatches: [{ godown: 'Warehouse A', qty: 50, rate: 10 }, { godown: 'Main Location', qty: 20, rate: 10 }] }
+r = await api('POST', '/api/records', { entity: 'ledger', payload: cust }); const custId = r.body.id
+check('customer created pending', r.status === 201 && r.body.status === 'pending', r.body)
+r = await api('POST', '/api/records', { entity: 'ledger', payload: supp }); const suppId = r.body.id
+r = await api('POST', '/api/records', { entity: 'stock_item', payload: bolt }); const boltId = r.body.id
+r = await api('POST', '/api/records', { entity: 'ledger', payload: { ...cust, name: 'Bad GSTIN Co', gstin: '123' } })
+check('invalid GSTIN rejected (400)', r.status === 400)
+const so3 = { number: 'SO-3001', date: '20260422', party: 'Kiran Traders', taxMode: 'intra', lines: [{ item: 'Bolt', qty: 5, rate: 20, gstRate: 12 }] }
+const po3 = { number: 'PO-3001', date: '20260422', party: 'Metro Wholesale', taxMode: 'intra', lines: [{ item: 'Bolt', qty: 10, rate: 9, gstRate: 12 }] }
+r = await api('POST', '/api/records', { entity: 'sales_order', payload: so3 }); const so3Id = r.body.id
+r = await api('POST', '/api/records', { entity: 'purchase_order', payload: po3 }); const po3Id = r.body.id
+c = await agent.cycle({ forcePull: true })
+const st = async (id: string) => (await api('GET', `/api/records/${id}`)).body
+check('customer, supplier, item synced (Create)', [await st(custId), await st(suppId), await st(boltId)].every((x) => x.status === 'synced' && x.action === 'Create' && x.tallyGuid), [custId, suppId, boltId])
+check('SO + PO using them synced in same cycle', (await st(so3Id)).status === 'synced' && (await st(po3Id)).status === 'synced', [await st(so3Id), await st(po3Id)].map((x) => x.error))
+r = await api('GET', '/api/data/ledger')
+const kiran = r.body.find((l: any) => l.name === 'Kiran Traders')
+check('customer in Tally under Sundry Debtors with GSTIN', kiran?.parent === 'Sundry Debtors' && kiran.data.gstin === '29KIRAN1234F1Z5', kiran)
+check('supplier in Tally under Sundry Creditors', r.body.some((l: any) => l.name === 'Metro Wholesale' && l.parent === 'Sundry Creditors'))
+r = await api('GET', `/api/data/ledger/${encodeURIComponent(kiran.guid)}`)
+check('customer XML has pincode/phone/email/reg type', /<PINCODE>560001/.test(r.body.raw_xml) && /9876543210/.test(r.body.raw_xml) && /kiran@example.com/.test(r.body.raw_xml) && /<GSTREGISTRATIONTYPE>Regular/.test(r.body.raw_xml), r.body.raw_xml?.slice(0, 400))
+r = await api('GET', '/api/data/stock_item')
+const boltT = r.body.find((i: any) => i.name === 'Bolt')
+check('item in Tally: HSN, GST 12%, opening 70 across 2 godowns', boltT?.data.hsn === '7318' && boltT.data.gstRate === 12 && boltT.data.openingBatches?.length === 2 && boltT.parent === 'Finished Goods', boltT?.data)
+r = await api('GET', '/api/reports/stock')
+check('stock per godown from item openings', r.body.some((s: any) => s.item === 'Bolt' && s.godown === 'Warehouse A' && s.qty === 50) && r.body.some((s: any) => s.item === 'Bolt' && s.godown === 'Main Location' && s.qty === 20), r.body.filter((s: any) => s.item === 'Bolt'))
+r = await api('GET', `/api/records/${boltId}`)
+check('item request XML uses GSTDETAILS/HSNCODE builder format', /<GSTDETAILS.LIST>.*<HSNCODE>7318<\/HSNCODE>.*<GSTRATE>6<\/GSTRATE>.*<GSTRATE>12<\/GSTRATE>/.test(r.body.requestXml ?? ''))
+
+r = await api('PUT', `/api/records/${custId}`, { ...cust, phone: '9000000000' })
+check('edit customer re-queues', r.status === 200 && r.body.status === 'pending', r.body)
+r = await api('PUT', `/api/records/${custId}`, { ...cust, name: 'Renamed' })
+check('rename rejected (400)', r.status === 400, r.body)
+c = await agent.cycle({ forcePull: true })
+r = await api('GET', `/api/records/${custId}`)
+check('edited customer pushed as Alter', r.body.status === 'synced' && r.body.action === 'Alter', r.body)
+r = await api('GET', '/api/data/ledger')
+check('no duplicate customer in Tally', r.body.filter((l: any) => l.name === 'Kiran Traders').length === 1)
+const kiran2 = r.body.find((l: any) => l.name === 'Kiran Traders')
+r = await api('GET', `/api/data/ledger/${encodeURIComponent(kiran2.guid)}`)
+check('altered phone in Tally', /9000000000/.test(r.body.raw_xml) && kiran2.guid === kiran.guid)
+
+r = await api('POST', '/api/records', { entity: 'stock_item', payload: { name: 'Nut', parent: 'No Such Group', baseUnit: 'Nos', hsn: '7318', gstRate: 18 } }); const nutId = r.body.id
+c = await agent.cycle()
+check('item with bad stock group fails', (await st(nutId)).status === 'failed')
+r = await api('POST', '/api/records', { entity: 'sales_order', payload: { number: 'SO-3002', date: '20260423', party: 'Kiran Traders', taxMode: 'intra', lines: [{ item: 'Nut', qty: 3, rate: 5, gstRate: 18 }] } }); const so4Id = r.body.id
+c = await agent.cycle()
+let so4 = await st(so4Id)
+check('SO waits for unsynced item (stays pending)', so4.status === 'pending' && /waiting for stock_item Nut/.test(so4.error ?? '') && c.pushed === 0, so4)
+r = await api('PUT', `/api/records/${nutId}`, { name: 'Nut', parent: 'Finished Goods', baseUnit: 'Nos', hsn: '7318', gstRate: 18 })
+c = await agent.cycle()
+so4 = await st(so4Id)
+check('item fixed -> item then SO sync in order', (await st(nutId)).status === 'synced' && so4.status === 'synced' && !so4.error, [await st(nutId), so4].map((x) => [x.status, x.error]))
+for (const p of ['/customers', '/suppliers', '/items', `/customers?edit=${custId}`, `/items?edit=${boltId}`, '/orders?type=sales_order']) {
+  const res = await fetch(base + p); if (res.status !== 200) check(`page ${p}`, false, res.status)
+}
+const html = await (await fetch(base + '/orders?type=sales_order')).text()
+check('SO form picker lists local customer + items', html.includes('Kiran Traders') && html.includes('Bolt'))
+check('nav shows Create + Tally data sections', /Customers.*Suppliers.*Items.*Sales Orders.*Purchase Orders/s.test(html) && /Stock.*Ledgers.*Vouchers.*Reports/s.test(html))
+
 cleanup()
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

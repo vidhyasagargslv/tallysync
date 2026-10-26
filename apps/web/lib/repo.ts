@@ -65,17 +65,58 @@ export function nextNumber(entity: string, prefix: string) {
   return `${prefix}-${n}`
 }
 
-/** Agent: records waiting for Tally. Leases them for 5 minutes so a crashed agent doesn't lose them. */
+/** Local master records a voucher depends on (party ledger + stock items). */
+function voucherDeps(payload: any): string[] {
+  return [`ledger:${payload.party}`, ...(payload.lines ?? []).map((l: any) => `stock_item:${l.item}`)]
+}
+
+/**
+ * Agent: records waiting for Tally, masters first. A voucher that references a local master which is not
+ * synced yet (and not in this same batch ahead of it) is held back with a "waiting for" note.
+ * Claimed rows are leased for 5 minutes so a crashed agent doesn't lose them.
+ */
 export function claimPending(limit: number): PendingRecord[] {
   const t = now()
   const lease = new Date(Date.now() + 5 * 60_000).toISOString()
   return db().transaction(() => {
     const rows = db().prepare(`SELECT * FROM outbox WHERE (status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-       OR (status = 'in_progress' AND locked_until < ?) ORDER BY priority, created_at LIMIT ?`).all(t, t, limit) as OutboxRow[]
-    const upd = db().prepare("UPDATE outbox SET status = 'in_progress', locked_until = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?")
-    for (const r of rows) upd.run(lease, t, r.id)
-    return rows.map((r) => ({ id: r.id, entity: r.entity as PushEntity, attempts: r.attempts + 1, payload: J(r.payload_json) }))
+       OR (status = 'in_progress' AND locked_until < ?) ORDER BY priority, created_at LIMIT ?`).all(t, t, limit * 4) as OutboxRow[]
+    const masterStatus = db().prepare('SELECT status FROM outbox WHERE record_key = ?')
+    const hold = db().prepare('UPDATE outbox SET error = ?, updated_at = ? WHERE id = ?')
+    const upd = db().prepare("UPDATE outbox SET status = 'in_progress', locked_until = ?, attempts = attempts + 1, error = NULL, updated_at = ? WHERE id = ?")
+    const inBatch = new Set<string>()
+    const out: PendingRecord[] = []
+    for (const r of rows) {
+      if (out.length >= limit) break
+      if (isVoucher(r.entity)) {
+        const waiting = voucherDeps(J(r.payload_json)).filter((k) => {
+          const m = masterStatus.get(k) as { status: string } | undefined
+          return m && m.status !== 'synced' && !inBatch.has(k)
+        })
+        if (waiting.length) {
+          const note = `waiting for ${waiting.map((k) => k.replace(':', ' ')).join(', ')} to sync`
+          if (r.error !== note) hold.run(note, t, r.id)
+          continue
+        }
+      } else inBatch.add(r.record_key)
+      upd.run(lease, t, r.id)
+      out.push({ id: r.id, entity: r.entity as PushEntity, attempts: r.attempts + 1, payload: J(r.payload_json) })
+    }
+    return out
   })()
+}
+
+/** Edit a record: same Tally object (same key), new payload, re-queued; the agent Alters it. */
+export function updateRecord(id: string, payload: unknown) {
+  const row = db().prepare('SELECT * FROM outbox WHERE id = ?').get(id) as OutboxRow | undefined
+  if (!row) return null
+  const isV = isVoucher(row.entity)
+  const p: any = isV ? VoucherZ.parse({ ...(payload as object), kind: row.entity }) : (MasterDataZ as any)[row.entity].parse(payload)
+  const key = isV ? `${row.entity}:${p.number}` : `${row.entity}:${p.name}`
+  if (key !== row.record_key) throw Object.assign(new Error(isV ? 'voucher number cannot be changed' : 'name cannot be changed (it identifies the object in Tally)'), { status: 400 })
+  db().prepare("UPDATE outbox SET payload_json = ?, status = 'pending', error = NULL, attempts = 0, next_attempt_at = NULL, locked_until = NULL, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(p), now(), id)
+  return getRecord(id)
 }
 
 export function applyResult(r: PushResult) {

@@ -10,17 +10,18 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <nav className="nav">
         <h1>TallySync</h1>
         <Link href="/">Dashboard</Link>
-        <div className="sec">To Tally</div>
-        <Link href="/orders?type=sales_order">Sales orders</Link>
-        <Link href="/orders?type=purchase_order">Purchase orders</Link>
-        <Link href="/orders?type=masters">Masters outbox</Link>
-        <div className="sec">From Tally</div>
+        <div className="sec">Create (pushes to Tally)</div>
+        <Link href="/customers">Customers</Link>
+        <Link href="/suppliers">Suppliers</Link>
+        <Link href="/items">Items</Link>
+        <Link href="/orders?type=sales_order">Sales Orders</Link>
+        <Link href="/orders?type=purchase_order">Purchase Orders</Link>
+        <Link href="/orders?type=masters">All masters outbox</Link>
+        <div className="sec">Tally data</div>
         <Link href="/stock">Stock</Link>
         <Link href="/ledgers">Ledgers</Link>
-        <Link href="/vouchers?category=sales">Sales</Link>
-        <Link href="/vouchers?category=purchase">Purchases</Link>
-        <Link href="/vouchers">All vouchers</Link>
-        <Link href="/reports">Outstanding &amp; TB</Link>
+        <Link href="/vouchers">Vouchers</Link>
+        <Link href="/reports">Reports (Outstanding, TB)</Link>
         <Link href="/masters">Masters</Link>
         <Link href="/schema">Schema explorer</Link>
         <div className="sec">System</div>

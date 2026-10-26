@@ -20,6 +20,10 @@ export interface LedgerInput {
   gstin?: string
   state?: string
   address?: string
+  pincode?: string
+  phone?: string
+  email?: string
+  gstRegistrationType?: 'Regular' | 'Composition' | 'Unregistered' | 'Consumer'
   billWise?: boolean
   gstDutyHead?: 'Central Tax' | 'State Tax' | 'Integrated Tax'
   gstRate?: number
@@ -37,6 +41,9 @@ export interface StockItemInput {
   openingQty?: number
   openingRate?: number
   godown?: string
+  /** opening stock per godown (overrides openingQty/openingRate/godown when given) */
+  openingBatches?: Array<{ godown: string; qty: number; rate: number }>
+  typeOfSupply?: 'Goods' | 'Services'
 }
 export type MasterInput = GroupInput | LedgerInput | UnitInput | StockGroupInput | GodownInput | StockItemInput
 
@@ -115,23 +122,29 @@ export function buildMasterXml(kind: MasterKind, d: MasterInput, action: ImportA
         `<OPENINGBALANCE>${amt(-(l.openingBalance ?? 0))}</OPENINGBALANCE>`
       ]
       if (l.affectsStock) parts.push('<AFFECTSSTOCK>Yes</AFFECTSSTOCK>')
-      if (l.address || l.state || l.gstin) {
+      const regType = l.gstRegistrationType ?? (l.gstin ? 'Regular' : undefined)
+      if (l.address || l.state || l.gstin || l.pincode || l.phone || l.email || regType) {
         // Legacy (TallyPrime <= 2.x / ERP 9) fields
         if (l.address) parts.push(`<ADDRESS.LIST TYPE="String"><ADDRESS>${esc(l.address)}</ADDRESS></ADDRESS.LIST>`)
         if (l.state) parts.push(`<LEDSTATENAME>${esc(l.state)}</LEDSTATENAME><COUNTRYNAME>India</COUNTRYNAME>`)
-        if (l.gstin) parts.push(`<GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE><PARTYGSTIN>${esc(l.gstin)}</PARTYGSTIN>`)
+        if (l.pincode) parts.push(`<PINCODE>${esc(l.pincode)}</PINCODE>`)
+        if (l.phone) parts.push(`<LEDGERPHONE>${esc(l.phone)}</LEDGERPHONE><LEDGERMOBILE>${esc(l.phone)}</LEDGERMOBILE>`)
+        if (l.email) parts.push(`<EMAIL>${esc(l.email)}</EMAIL>`)
+        if (regType) parts.push(`<GSTREGISTRATIONTYPE>${esc(regType)}</GSTREGISTRATIONTYPE>`)
+        if (l.gstin) parts.push(`<PARTYGSTIN>${esc(l.gstin)}</PARTYGSTIN>`)
         // TallyPrime 3.x+/4.x+ dated sub-lists (ignored by older releases)
         parts.push(
           `<LEDMAILINGDETAILS.LIST><APPLICABLEFROM>20260401</APPLICABLEFROM><MAILINGNAME>${esc(l.name)}</MAILINGNAME>` +
             (l.address ? `<ADDRESS.LIST TYPE="String"><ADDRESS>${esc(l.address)}</ADDRESS></ADDRESS.LIST>` : '') +
             (l.state ? `<STATE>${esc(l.state)}</STATE>` : '') +
+            (l.pincode ? `<PINCODE>${esc(l.pincode)}</PINCODE>` : '') +
             `<COUNTRY>India</COUNTRY></LEDMAILINGDETAILS.LIST>`
         )
-        if (l.gstin)
+        if (l.gstin || regType)
           parts.push(
-            `<LEDGSTREGDETAILS.LIST><APPLICABLEFROM>20260401</APPLICABLEFROM><GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>` +
+            `<LEDGSTREGDETAILS.LIST><APPLICABLEFROM>20260401</APPLICABLEFROM><GSTREGISTRATIONTYPE>${esc(regType ?? 'Regular')}</GSTREGISTRATIONTYPE>` +
               (l.state ? `<PLACEOFSUPPLY>${esc(l.state)}</PLACEOFSUPPLY>` : '') +
-              `<GSTIN>${esc(l.gstin)}</GSTIN></LEDGSTREGDETAILS.LIST>`
+              (l.gstin ? `<GSTIN>${esc(l.gstin)}</GSTIN>` : '') + `</LEDGSTREGDETAILS.LIST>`
           )
       }
       if (l.gstDutyHead) {
@@ -155,24 +168,25 @@ export function buildMasterXml(kind: MasterKind, d: MasterInput, action: ImportA
     }
     case 'stock_item': {
       const s = d as StockItemInput
-      const q = s.openingQty ?? 0
-      const rate = s.openingRate ?? 0
-      const value = r2(q * rate)
-      const godown = s.godown || 'Main Location'
+      const batches = s.openingBatches?.length
+        ? s.openingBatches.filter((b) => b.qty)
+        : s.openingQty ? [{ godown: s.godown || 'Main Location', qty: s.openingQty, rate: s.openingRate ?? 0 }] : []
+      const q = batches.reduce((t, b) => t + b.qty, 0)
+      const value = r2(batches.reduce((t, b) => t + r2(b.qty * b.rate), 0))
+      const rate = q ? r2(value / q) : 0
       const parts = [
         `<STOCKITEM NAME="${esc(s.name)}" ACTION="${action}">`,
         nameList(s.name),
         `<PARENT>${esc(s.parent ?? '')}</PARENT>`,
         `<BASEUNITS>${esc(s.baseUnit)}</BASEUNITS>`,
         `<GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>`,
-        `<GSTTYPEOFSUPPLY>Goods</GSTTYPEOFSUPPLY>`
+        `<GSTTYPEOFSUPPLY>${s.typeOfSupply ?? 'Goods'}</GSTTYPEOFSUPPLY>`
       ]
       if (q) {
         // Stock opening value is a debit -> negative in Tally XML
-        parts.push(
-          `<OPENINGBALANCE>${qtyStr(q, s.baseUnit)}</OPENINGBALANCE><OPENINGVALUE>${amt(-value)}</OPENINGVALUE><OPENINGRATE>${amt(rate)}/${esc(s.baseUnit)}</OPENINGRATE>`,
-          `<BATCHALLOCATIONS.LIST><GODOWNNAME>${esc(godown)}</GODOWNNAME><BATCHNAME>Primary Batch</BATCHNAME><OPENINGBALANCE>${qtyStr(q, s.baseUnit)}</OPENINGBALANCE><OPENINGVALUE>${amt(-value)}</OPENINGVALUE><OPENINGRATE>${amt(rate)}/${esc(s.baseUnit)}</OPENINGRATE></BATCHALLOCATIONS.LIST>`
-        )
+        parts.push(`<OPENINGBALANCE>${qtyStr(q, s.baseUnit)}</OPENINGBALANCE><OPENINGVALUE>${amt(-value)}</OPENINGVALUE><OPENINGRATE>${amt(rate)}/${esc(s.baseUnit)}</OPENINGRATE>`)
+        for (const b of batches)
+          parts.push(`<BATCHALLOCATIONS.LIST><GODOWNNAME>${esc(b.godown)}</GODOWNNAME><BATCHNAME>Primary Batch</BATCHNAME><OPENINGBALANCE>${qtyStr(b.qty, s.baseUnit)}</OPENINGBALANCE><OPENINGVALUE>${amt(-r2(b.qty * b.rate))}</OPENINGVALUE><OPENINGRATE>${amt(b.rate)}/${esc(s.baseUnit)}</OPENINGRATE></BATCHALLOCATIONS.LIST>`)
       }
       if (s.gstRate !== undefined || s.hsn) {
         const rate = s.gstRate ?? 0

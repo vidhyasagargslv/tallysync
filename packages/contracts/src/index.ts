@@ -34,7 +34,9 @@ const date = z.string().regex(/^\d{8}$/, 'YYYYMMDD')
 export const GroupZ = z.object({ name: z.string().min(1), parent: z.string().default('') })
 export const LedgerZ = z.object({
   name: z.string().min(1), parent: z.string().min(1), openingBalance: z.number().optional(),
-  gstin: z.string().optional(), state: z.string().optional(), address: z.string().optional(), billWise: z.boolean().optional(),
+  gstin: z.string().regex(/^[0-9]{2}[A-Z0-9]{13}$/, 'GSTIN must be 15 characters').optional(), state: z.string().optional(), address: z.string().optional(), billWise: z.boolean().optional(),
+  pincode: z.string().optional(), phone: z.string().optional(), email: z.string().email().optional(),
+  gstRegistrationType: z.enum(['Regular', 'Composition', 'Unregistered', 'Consumer']).optional(),
   gstDutyHead: z.enum(['Central Tax', 'State Tax', 'Integrated Tax']).optional(), gstRate: z.number().optional(), affectsStock: z.boolean().optional()
 })
 export const UnitZ = z.object({ name: z.string().min(1), decimals: z.number().int().optional(), formalName: z.string().optional() })
@@ -42,7 +44,9 @@ export const StockGroupZ = z.object({ name: z.string().min(1), parent: z.string(
 export const GodownZ = z.object({ name: z.string().min(1), parent: z.string().optional() })
 export const StockItemZ = z.object({
   name: z.string().min(1), parent: z.string().optional(), baseUnit: z.string().min(1), hsn: z.string().optional(), gstRate: z.number().optional(),
-  openingQty: z.number().optional(), openingRate: z.number().optional(), godown: z.string().optional()
+  openingQty: z.number().optional(), openingRate: z.number().optional(), godown: z.string().optional(),
+  openingBatches: z.array(z.object({ godown: z.string().min(1), qty: z.number(), rate: z.number().nonnegative() })).optional(),
+  typeOfSupply: z.enum(['Goods', 'Services']).optional()
 })
 export const MasterDataZ = { group: GroupZ, ledger: LedgerZ, unit: UnitZ, stock_group: StockGroupZ, godown: GodownZ, stock_item: StockItemZ } as const
 

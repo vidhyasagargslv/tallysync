@@ -37,7 +37,7 @@ export function requireAgent(req: Request, opts: { gate?: boolean } = { gate: tr
 export function json(data: unknown, status = 200) { return Response.json(data, { status }) }
 export function handle(fn: () => Promise<Response> | Response): Promise<Response> {
   return Promise.resolve().then(fn).catch((e) => {
-    if (e instanceof HttpError) return json({ error: e.message }, e.status)
+    if (e instanceof HttpError || typeof e?.status === 'number') return json({ error: e.message }, e.status)
     if (e?.name === 'ZodError') return json({ error: 'validation failed', issues: e.issues }, 400)
     console.error(e)
     return json({ error: String(e?.message ?? e) }, 500)
