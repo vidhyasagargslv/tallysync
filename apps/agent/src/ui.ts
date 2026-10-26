@@ -23,6 +23,7 @@ Locked company: ${lock ? `${esc(lock.name)} | GUID ${esc(lock.guid)} | GSTIN ${e
 Open in Tally: ${esc(a.openCompanies.map((c) => c.name).join(', ') || '-')}<br>
 Last pull: ${esc(a.lastPullAt ?? '-')} / last push: ${esc(a.lastPushAt ?? '-')}<br>
 Mapping: ${esc(a.mappingSource)} ${esc(a.mappingCache ? `v${a.mappingCache.version} ${a.mappingCache.hash.slice(0, 12)}` : "(agent.json fallback)")} - ${a.lastValidation ? (a.lastValidation.issues.length ? `<span class="bad">${a.lastValidation.issues.length} issue(s)</span>` : `<span class="ok">valid in Tally</span>`) : "not checked"}<br>
+Last manual request from the app: ${esc(a.lastCommand ? `${a.lastCommand.type} ${a.lastCommand.status} at ${a.lastCommand.at}` : '-')}<br>
 Last error: ${esc(a.lastError ?? "-")}
 <div class="row"><form method="post" action="/sync"><button>Sync now</button></form>
 <form method="post" action="/relink" onsubmit="return confirm('Clear the locked company? The next connect locks whichever company matches the name.')"><button>Re-link company</button></form></div></div>

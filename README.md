@@ -32,7 +32,7 @@ other GUIDs with 409. To switch company on purpose: "Reset company link" in the 
 ```bash
 npm install && npm approve-scripts esbuild better-sqlite3
 cp apps/web/.env.example apps/web/.env       # API key + SQLite path
-npm test                                     # builds the web app + 85-check e2e in mock mode
+npm test                                     # builds the web app + 96-check e2e in mock mode
 npm run dev:web                              # http://localhost:3000
 # second terminal: agent against mock Tally
 TALLY_MODE=mock TALLYSYNC_HOME=./data/agent TALLYSYNC_BACKEND_URL=http://localhost:3000 \
@@ -68,6 +68,16 @@ Create (pushes to Tally): **Customers** (ledger under `groups.customers`), **Sup
 record (pending -> synced/failed, error, Retry, request/response XML). Edits (`PUT /api/records/:id`; name/number fixed)
 push as Alter. Order pickers merge local masters with masters pulled from Tally. A voucher that uses a local master not yet
 synced waits ("waiting for ...") until that master syncs; masters always go before vouchers.
+
+## Manual sync (when you don't want to wait for the 15 s cycle)
+1. **Web app dashboard -> Manual sync:** Sync now (push + pull), Push only, Pull only, Pull one entity, Full re-pull
+   (ignores ALTERID cursors, full snapshots). The request is stored in `sync_requests`; the agent polls
+   `GET /api/tally-sync/commands` every ~4 s (`TALLYSYNC_COMMAND_POLL_MS`), runs it immediately (company gate applies; if a
+   cycle is running it queues behind it) and reports `running` -> `done`/`failed` with a summary, shown live on the dashboard.
+   Requests not picked up within 2 min (`SYNC_REQUEST_TTL_SEC`) become `expired`: the agent is offline or can't reach the app.
+2. **On the Tally PC:** http://127.0.0.1:4100 -> **Sync now** (works even when the app can't reach the agent's commands).
+3. **CLI on the Tally PC:** `tallysync-agent.exe sync-once` (with `TALLYSYNC_HOME=%ProgramData%\TallySync` when run by hand)
+   runs one full cycle and prints the result JSON.
 
 ## Tally mapping (declarative config)
 Where sales, purchases, taxes, round-off and auto-created masters go is defined in one file:
@@ -128,6 +138,8 @@ Implement these with header auth `x-api-key` (agent also sends `x-company-guid`,
 | `POST /api/tally-sync/status` | heartbeat (store latest). Should not be company-gated. |
 | `GET /api/tally-sync/mapping` | `{ version, hash, source, mapping }` (see Tally mapping above). |
 | `POST /api/tally-sync/mapping/validation` | optional; `{ hash, checkedAt, company, ok, issues[] }`. |
+| `GET /api/tally-sync/commands` | optional (404 = unsupported, agent backs off 10 min); `[{ id, type: sync\|push\|pull\|pull_entity\|full_repull, entity?, full? }]`, each returned once. |
+| `POST /api/tally-sync/commands/:id` | optional; `{ status: running\|done\|failed, summary?, error?, result?: { gate, pushed, pulled[] } }`. |
 
 FastAPI: 4 route functions + tables like `apps/web/lib/db.ts` (`outbox`, `tally_objects`, `schema_fields`, `pull_state`,
 `agent_status`). Supabase: the same 4 as Edge Functions (or Next/Express routes) over those tables. Reference logic: `apps/web/lib/repo.ts`.

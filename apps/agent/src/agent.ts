@@ -333,7 +333,7 @@ export class Agent {
   }
 
   /** One cycle: gate -> push pending -> pull due entities -> heartbeat. */
-  async cycle(opts: { forcePull?: boolean; full?: boolean } = {}) {
+  async cycle(opts: CycleOptions = {}) {
     if (!this.configured) return { skipped: true as const, reason: 'not configured' }
     if (this.busy) return { skipped: true as const, reason: 'busy' }
     this.busy = true
@@ -346,8 +346,9 @@ export class Agent {
         await this.refreshMapping()
         const index = await gate.engine!.masterIndex()
         await this.reportValidation(this.validateMapping(index))
-        pushed = await this.pushPending(gate.engine!, index)
-        for (const e of this.dueEntities(opts.forcePull)) { await this.pullEntity(gate.engine!, e, opts.full); pulled.push(e) }
+        if (opts.push !== false) pushed = await this.pushPending(gate.engine!, index)
+        const entities = opts.pull === false ? [] : opts.only ? opts.only : this.dueEntities(opts.forcePull)
+        for (const e of entities) { await this.pullEntity(gate.engine!, e, opts.full); pulled.push(e) }
       }
       try { await this.heartbeat() } catch (e) { log('warn', `heartbeat failed: ${(e as Error).message}`) }
       return { skipped: false as const, gate: this.companyState, message: gate.message, pushed, pulled }
@@ -360,6 +361,65 @@ export class Agent {
     } finally { this.busy = false }
   }
 
+  // ------------------------------------------------------- manual commands
+  private commandsUnsupportedUntil = 0
+  private commandTimer?: NodeJS.Timeout
+  lastCommand: { id: string; type: string; status: string; at: string } | null = null
+
+  /** Wait for a running cycle to finish (manual commands queue behind it instead of being dropped). */
+  private async idle(maxMs = 10 * 60_000) {
+    const t0 = Date.now()
+    while (this.busy && Date.now() - t0 < maxMs) await sleep(200)
+  }
+
+  /** Map a backend sync request to cycle options. */
+  static commandOptions(c: SyncCommand): CycleOptions {
+    switch (c.type) {
+      case 'push': return { push: true, pull: false }
+      case 'pull': return { push: false, pull: true, forcePull: true }
+      case 'pull_entity': return { push: false, pull: true, only: c.entity ? [c.entity] : undefined, forcePull: true, full: !!c.full }
+      case 'full_repull': return { push: false, pull: true, forcePull: true, full: true }
+      default: return { push: true, pull: true, forcePull: true }
+    }
+  }
+
+  /** Poll the backend for manual sync requests and run them. 404 = backend has no commands feature. */
+  async pollCommands() {
+    if (!this.configured || Date.now() < this.commandsUnsupportedUntil) return 0
+    let cmds: SyncCommand[]
+    try { cmds = await this.api<SyncCommand[]>('GET', '/api/tally-sync/commands', undefined, 0) }
+    catch (e) {
+      if (e instanceof BackendError && e.status === 404) { this.commandsUnsupportedUntil = Date.now() + 10 * 60_000; return 0 }
+      throw e
+    }
+    for (const c of cmds) {
+      await this.api('POST', `/api/tally-sync/commands/${c.id}`, { status: 'running' }, 1)
+      this.lastCommand = { id: c.id, type: c.type, status: 'running', at: new Date().toISOString() }
+      log('info', `manual ${c.type}${c.entity ? ` ${c.entity}` : ''} requested from backend (${c.id})`)
+      await this.idle()
+      const r: any = await this.cycle(Agent.commandOptions(c))
+      const ok = !r.skipped && r.gate === 'matched' && !r.error
+      const summary = r.skipped ? `skipped: ${r.reason}` : ok
+        ? `pushed ${r.pushed}, pulled ${r.pulled.length} entit${r.pulled.length === 1 ? 'y' : 'ies'}${r.pulled.length ? ` (${r.pulled.join(', ')})` : ''}`
+        : `gate ${r.gate}`
+      const body = { status: ok ? 'done' : 'failed', summary, error: ok ? undefined : r.error ?? r.message ?? r.reason, result: { gate: r.gate, pushed: r.pushed ?? 0, pulled: r.pulled ?? [] } }
+      await this.api('POST', `/api/tally-sync/commands/${c.id}`, body, 2).catch((e) => log('warn', `command report failed: ${(e as Error).message}`))
+      this.lastCommand = { id: c.id, type: c.type, status: body.status, at: new Date().toISOString() }
+      log(ok ? 'info' : 'warn', `manual ${c.type}: ${body.status} - ${summary}${body.error ? ` - ${body.error}` : ''}`)
+    }
+    return cmds.length
+  }
+
+  startCommandPoll(ms = 4000) {
+    this.stopCommandPoll()
+    const run = async () => {
+      try { await this.pollCommands() } catch (e) { log('warn', `command poll: ${(e as Error).message}`) }
+      this.commandTimer = setTimeout(run, ms)
+    }
+    this.commandTimer = setTimeout(run, Math.min(ms, 1000))
+  }
+  stopCommandPoll() { if (this.commandTimer) clearTimeout(this.commandTimer); this.commandTimer = undefined }
+
   start() {
     const loop = (fn: () => Promise<unknown>, sec: () => number) => {
       const run = async () => {
@@ -369,9 +429,13 @@ export class Agent {
       this.timers.push(setTimeout(run, 1000))
     }
     loop(() => this.cycle(), () => this.settings.sync.jobPollSec)
+    this.startCommandPoll(Number(process.env.TALLYSYNC_COMMAND_POLL_MS ?? 4000))
     log('info', `TallySync agent ${AGENT_VERSION} started; data dir ${dataDir()}; tally ${this.settings.tallyMode} ${this.settings.tallyUrl}; settings http://127.0.0.1:${this.settings.uiPort}`)
   }
-  stop() { for (const t of this.timers) clearTimeout(t); this.timers = [] }
+  stop() { this.stopCommandPoll(); for (const t of this.timers) clearTimeout(t); this.timers = [] }
 }
+
+export interface CycleOptions { forcePull?: boolean; full?: boolean; push?: boolean; pull?: boolean; only?: PullEntity[] }
+export interface SyncCommand { id: string; type: 'sync' | 'push' | 'pull' | 'pull_entity' | 'full_repull'; entity?: PullEntity | null; full?: boolean }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))

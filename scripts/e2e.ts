@@ -26,7 +26,7 @@ const writeMapping = (m: unknown) => {
 
 if (!fs.existsSync(path.join(root, 'apps/web/.next/BUILD_ID'))) { console.error('build the web app first: npm run build -w @tallysync/web'); process.exit(1) }
 const web = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], {
-  cwd: path.join(root, 'apps/web'), env: { ...process.env, DATABASE_PATH: path.join(tmp, 'web.db'), TALLYSYNC_API_KEY: KEY, TALLY_MAPPING_PATH: mappingFile }, stdio: ['ignore', 'pipe', 'pipe']
+  cwd: path.join(root, 'apps/web'), env: { ...process.env, DATABASE_PATH: path.join(tmp, 'web.db'), TALLYSYNC_API_KEY: KEY, TALLY_MAPPING_PATH: mappingFile, SYNC_REQUEST_TTL_SEC: '4' }, stdio: ['ignore', 'pipe', 'pipe']
 })
 let webOut = ''
 web.stdout.on('data', (d) => (webOut += d)); web.stderr.on('data', (d) => (webOut += d))
@@ -301,6 +301,53 @@ for (const p of ['/customers', '/suppliers', '/items', `/customers?edit=${custId
 const html = await (await fetch(base + '/orders?type=sales_order')).text()
 check('SO form picker lists local customer + items', html.includes('Kiran Traders') && html.includes('Bolt'))
 check('nav shows Create + Tally data sections', /Customers.*Suppliers.*Items.*Sales Orders.*Purchase Orders/s.test(html) && /Stock.*Ledgers.*Vouchers.*Reports/s.test(html))
+
+console.log('9. manual sync from the web app')
+const waitReq = async (id: string, ms = 10_000) => {
+  const t0 = Date.now()
+  for (;;) {
+    const x = (await api('GET', '/api/sync-requests?limit=50')).body.find((q: any) => q.id === id)
+    if (['done', 'failed', 'expired'].includes(x?.status) || Date.now() - t0 > ms) return { ...x, ms: Date.now() - t0 }
+    await new Promise((res) => setTimeout(res, 200))
+  }
+}
+agent.startCommandPoll(300)
+r = await api('POST', '/api/sync-requests', { type: 'sync' })
+check('sync request created', r.status === 201 && r.body.status === 'requested', r.body)
+let q = await waitReq(r.body.id)
+check('agent ran Sync now within seconds -> done with summary', q.status === 'done' && q.ms < 5000 && /pushed \d+, pulled 15 entities/.test(q.summary), q)
+r = await api('POST', '/api/sync-requests', { type: 'pull_entity' })
+check('pull_entity needs entity (400)', r.status === 400)
+r = await api('POST', '/api/sync-requests', { type: 'pull_entity', entity: 'ledger' })
+q = await waitReq(r.body.id)
+check('pull only one entity', q.status === 'done' && q.result.pushed === 0 && q.result.pulled.length === 1 && q.result.pulled[0] === 'ledger', q)
+await api('POST', '/api/records', { entity: 'purchase_order', payload: { ...po3, number: 'PO-3002' } })
+r = await api('POST', '/api/sync-requests', { type: 'push' })
+q = await waitReq(r.body.id)
+check('push only', q.status === 'done' && q.result.pushed === 1 && q.result.pulled.length === 0, q)
+r = await api('POST', '/api/sync-requests', { type: 'pull' })
+q = await waitReq(r.body.id)
+check('pull only (all enabled)', q.status === 'done' && q.result.pushed === 0 && q.result.pulled.length === 15, q)
+r = await api('POST', '/api/sync-requests', { type: 'full_repull' })
+q = await waitReq(r.body.id)
+r = await api('GET', '/api/agent-status')
+check('full re-pull ignores ALTERID (all full snapshots)', q.status === 'done' && q.result.pulled.length === 15 && r.body.pullState.filter((p: any) => ['ledger', 'voucher', 'stock_item'].includes(p.entity)).every((p: any) => p.last_full === 1), [q, r.body.pullState])
+const running = agent.cycle({ forcePull: true })
+r = await api('POST', '/api/sync-requests', { type: 'sync' })
+await running
+q = await waitReq(r.body.id)
+check('request during a running cycle is queued, not dropped', q.status === 'done' && !/skipped/.test(q.summary ?? ''), q)
+agent.saveSettings({ lockedCompany: { ...lock, guid: 'wrong-guid' } })
+r = await api('POST', '/api/sync-requests', { type: 'sync' })
+q = await waitReq(r.body.id)
+check('gate mismatch -> request failed with reason', q.status === 'failed' && /mismatch/.test(q.error ?? '') && /gate mismatch/.test(q.summary ?? ''), q)
+agent.saveSettings({ lockedCompany: lock })
+agent.stopCommandPoll()
+r = await api('POST', '/api/sync-requests', { type: 'sync' })
+q = await waitReq(r.body.id, 8000)
+check('request expires when agent is stopped, with offline hint', q.status === 'expired' && /agent offline.*127\.0\.0\.1:4100.*sync-once/.test(q.error ?? ''), q)
+const dash = await (await fetch(base + '/')).text()
+check('dashboard shows manual sync panel', dash.includes('Manual sync') && dash.includes('Full re-pull'))
 
 cleanup()
 console.log(`\n${pass} passed, ${fail} failed`)

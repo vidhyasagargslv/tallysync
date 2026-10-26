@@ -1,6 +1,7 @@
 import { PULL_ENTITIES } from '@tallysync/contracts'
 import Link from 'next/link'
 import { Action, AutoRefresh } from '@/components/Action'
+import { SyncPanel } from '@/components/SyncPanel'
 import { getSetting } from '@/lib/db'
 import { counts, latestStatus, listRecords, pullState } from '@/lib/repo'
 import { Badge, Table, ftime } from '@/lib/ui'
@@ -31,6 +32,7 @@ export default function Dashboard() {
       {a?.lastError && <p className="err">Last error: {a.lastError}</p>}
       <p className="muted">Backend linked to company GUID: {getSetting('company_guid') ?? 'not yet (locks on first agent sync)'}</p>
     </div>
+    <SyncPanel entities={[...PULL_ENTITIES]} />
     <div className="cards">
       <div className="stat"><span className="muted">Pending to Tally</span><b>{by('pending') + by('in_progress')}</b></div>
       <div className="stat"><span className="muted">Synced</span><b>{by('synced')}</b></div>

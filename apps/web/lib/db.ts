@@ -22,7 +22,11 @@ const MIGRATIONS = [
      first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (entity, path));
    CREATE TABLE IF NOT EXISTS pull_state (entity TEXT PRIMARY KEY, last_alterid INTEGER, last_pulled_at TEXT, last_count INTEGER, last_full INTEGER);
    CREATE TABLE IF NOT EXISTS agent_status (id INTEGER PRIMARY KEY, status_json TEXT NOT NULL, received_at TEXT NOT NULL);
-   CREATE TABLE IF NOT EXISTS sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, entity TEXT, status TEXT NOT NULL, message TEXT NOT NULL);`
+   CREATE TABLE IF NOT EXISTS sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, entity TEXT, status TEXT NOT NULL, message TEXT NOT NULL);`,
+  `CREATE TABLE IF NOT EXISTS sync_requests (
+     id TEXT PRIMARY KEY, type TEXT NOT NULL, entity TEXT, full INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
+     requested_at TEXT NOT NULL, picked_at TEXT, finished_at TEXT, summary TEXT, result_json TEXT, error TEXT);
+   CREATE INDEX IF NOT EXISTS sync_requests_status ON sync_requests(status, requested_at);`
 ]
 
 const g = globalThis as unknown as { __tsdb?: Database.Database }
