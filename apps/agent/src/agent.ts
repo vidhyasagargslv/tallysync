@@ -76,7 +76,10 @@ export class Agent {
   /** Save connection settings from the local page. Changing the company name clears the lock. */
   configure(p: { backendUrl?: string; apiKey?: string; tallyUrl?: string; tallyMode?: 'real' | 'mock'; companyName?: string }) {
     const patch: Partial<LocalSettings> = {}
-    if (p.backendUrl !== undefined) patch.backendUrl = p.backendUrl.trim().replace(/\/+$/, '')
+    if (p.backendUrl !== undefined) {
+      patch.backendUrl = p.backendUrl.trim().replace(/\/+$/, '')
+      if (/^http:\/\//i.test(patch.backendUrl) && !/^http:\/\/(localhost|127\.|\[::1\])/i.test(patch.backendUrl)) log('warn', 'backend URL is plain http: the API key travels unencrypted; use https://')
+    }
     if (p.tallyUrl) patch.tallyUrl = p.tallyUrl.trim()
     if (p.tallyMode) patch.tallyMode = p.tallyMode
     if (p.companyName !== undefined && p.companyName.trim() !== this.settings.companyName) { patch.companyName = p.companyName.trim(); patch.lockedCompany = null }
@@ -101,12 +104,14 @@ export class Agent {
       try {
         const headers: Record<string, string> = { 'content-type': 'application/json', 'x-contract-version': CONTRACT_VERSION, 'x-api-key': this.apiKey ?? '' }
         if (this.settings.lockedCompany) headers['x-company-guid'] = this.settings.lockedCompany.guid
-        const res = await fetch(new URL(p, this.settings.backendUrl + '/'), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) })
+        // 90s: covers serverless cold starts (Vercel + Neon wake-up) on top of the request itself
+        const res = await fetch(new URL(p, this.settings.backendUrl + '/'), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(90_000) })
         const text = await res.text()
         let json: any
         try { json = text ? JSON.parse(text) : undefined } catch { json = { error: text.slice(0, 200) } }
         if (!res.ok) {
-          if (res.status >= 500 && attempt < retries) throw new Error(`backend ${res.status}`)
+          // 5xx (incl. 502/503/504 from a cold or busy serverless host), 408 and 429 are transient: back off and retry
+          if ((res.status >= 500 || res.status === 408 || res.status === 429) && attempt < retries) throw new Error(`backend ${res.status}`)
           throw new BackendError(res.status, json?.error ?? `HTTP ${res.status}`)
         }
         return json as T
@@ -311,14 +316,25 @@ export class Agent {
     const since = full ? 0 : this.state.cursors[entity] ?? 0
     const company = this.settings.lockedCompany!
     const post = (b: object) => this.api('POST', `/api/tally-sync/data/${entity}`, { entity, company, ...b })
+    // Batches are capped by count AND by JSON size (serverless hosts such as Vercel reject bodies over 4.5 MB);
+    // a 413 from the backend halves the batch and retries.
+    const postObjects = async (objects: unknown[], b: { full: boolean; sinceAlterId: number; maxAlterId: number }): Promise<void> => {
+      try { await post({ ...b, objects }) } catch (e) {
+        if (!(e instanceof BackendError && e.status === 413) || objects.length <= 1) throw e
+        const mid = Math.ceil(objects.length / 2)
+        log('warn', `pull ${entity}: backend returned 413 for ${objects.length} objects, splitting`)
+        await postObjects(objects.slice(0, mid), { ...b, full: false })
+        await postObjects(objects.slice(mid), { ...b, full: false })
+      }
+    }
     try {
       if ((OBJECT_ENTITIES as readonly string[]).includes(entity)) {
         const r = await engine.pull(entity as ObjectKey, since)
-        const chunk = 500
         const isFull = since === 0 || entity === 'company'
         if (!r.objects.length) await post({ full: false, sinceAlterId: since, maxAlterId: r.maxAlterId, objects: [] })
-        for (let i = 0; i < r.objects.length; i += chunk)
-          await post({ full: isFull && i === 0 && r.objects.length <= chunk, sinceAlterId: since, maxAlterId: r.maxAlterId, objects: r.objects.slice(i, i + chunk) })
+        const batches = batchBySize(r.objects, MAX_BATCH_OBJECTS, MAX_BATCH_BYTES)
+        for (const objects of batches)
+          await postObjects(objects, { full: isFull && batches.length === 1, sinceAlterId: since, maxAlterId: r.maxAlterId })
         this.state.cursors[entity] = r.maxAlterId
         log('info', `pull ${entity}: ${r.objects.length} objects (since ALTERID ${since})`)
       } else {
@@ -443,3 +459,20 @@ export interface CycleOptions { forcePull?: boolean; full?: boolean; push?: bool
 export interface SyncCommand { id: string; type: 'sync' | 'push' | 'pull' | 'pull_entity' | 'full_repull'; entity?: PullEntity | null; full?: boolean }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Max objects / JSON bytes per POST /data/{entity}. 3 MB leaves headroom under Vercel's 4.5 MB request limit. */
+export const MAX_BATCH_OBJECTS = 500
+export const MAX_BATCH_BYTES = Number(process.env.TALLYSYNC_MAX_BATCH_BYTES) || 3_000_000
+
+/** Split into batches of at most maxCount items and (approximately) maxBytes of JSON; one oversized item goes alone. */
+export function batchBySize<T>(items: T[], maxCount: number, maxBytes: number): T[][] {
+  const out: T[][] = []
+  let cur: T[] = [], size = 0
+  for (const it of items) {
+    const n = Buffer.byteLength(JSON.stringify(it) ?? '') + 1
+    if (cur.length && (cur.length >= maxCount || size + n > maxBytes)) { out.push(cur); cur = []; size = 0 }
+    cur.push(it); size += n
+  }
+  if (cur.length) out.push(cur)
+  return out
+}

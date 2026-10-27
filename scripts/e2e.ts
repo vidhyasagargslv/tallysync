@@ -432,6 +432,15 @@ check('request expires when agent is stopped, with offline hint', q.status === '
 const dash = await (await fetch(base + '/')).text()
 check('dashboard shows manual sync panel', dash.includes('Manual sync') && dash.includes('Full re-pull'))
 
+console.log('10. agent batching for serverless body limits')
+{
+  const { batchBySize } = await import('../apps/agent/src/agent.js')
+  const big = Array.from({ length: 1200 }, (_, i) => ({ i, rawXml: 'x'.repeat(10_000) }))
+  const b = batchBySize(big, 500, 3_000_000)
+  check('batches capped by bytes (<= 3 MB each) and count', b.every((x) => x.length <= 500 && Buffer.byteLength(JSON.stringify(x)) <= 3_000_000) && b.flat().length === 1200 && b.length === 5, b.map((x) => x.length))
+  check('small objects still batch by count', batchBySize(Array.from({ length: 1001 }, (_, i) => i), 500, 3_000_000).map((x) => x.length).join() === '500,500,1')
+}
+
 cleanup()
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

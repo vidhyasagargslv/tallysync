@@ -178,3 +178,13 @@ scripts/e2e.ts       mock-mode end-to-end test
 - The Next.js UI has no login (fine for testing; add auth before exposing it). One Tally company per agent/backend.
 - No auto-update, no tray icon, no Postgres run yet (SQL is portable). Invoice-against-order linking, voucher
   delete/cancel, multi-currency not built. Mapping page is read-only (edit the file).
+
+## Remote HTTPS backend (e.g. Vercel)
+
+- Use an `https://` backend URL (the agent warns about plain `http://` to a non-local host).
+- Requests time out after 90 s; 5xx/408/429 and network errors are retried with backoff (cold starts).
+- Pull batches are capped at 500 objects **and** ~3 MB of JSON (`TALLYSYNC_MAX_BATCH_BYTES`), below Vercel's
+  4.5 MB request limit; a 413 halves the batch and retries.
+- Proxy: set `HTTPS_PROXY` (and optionally `NO_PROXY`) for the agent process; localhost (Tally) is never proxied.
+- Corporate TLS inspection: set `TALLYSYNC_USE_SYSTEM_CA=1` to also trust the Windows certificate store.
+- Vercel Deployment Protection must not cover `/api/tally-sync/*` for the production domain, or the agent gets 401 pages.
