@@ -75,12 +75,14 @@ function voucherDeps(payload: any): string[] {
  * synced yet (and not in this same batch ahead of it) is held back with a "waiting for" note.
  * Claimed rows are leased for 5 minutes so a crashed agent doesn't lose them.
  */
-export function claimPending(limit: number): PendingRecord[] {
+export function claimPending(limit: number, entities: string[] | null = null): PendingRecord[] {
+  if (entities && !entities.length) return []
   const t = now()
   const lease = new Date(Date.now() + 5 * 60_000).toISOString()
   return db().transaction(() => {
-    const rows = db().prepare(`SELECT * FROM outbox WHERE (status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-       OR (status = 'in_progress' AND locked_until < ?) ORDER BY priority, created_at LIMIT ?`).all(t, t, limit * 4) as OutboxRow[]
+    const only = entities ? `entity IN (${entities.map(() => '?').join(',')}) AND ` : ''
+    const rows = db().prepare(`SELECT * FROM outbox WHERE ${only}((status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+       OR (status = 'in_progress' AND locked_until < ?)) ORDER BY priority, created_at LIMIT ?`).all(...(entities ?? []), t, t, limit * 4) as OutboxRow[]
     const masterStatus = db().prepare('SELECT status FROM outbox WHERE record_key = ?')
     const hold = db().prepare('UPDATE outbox SET error = ?, updated_at = ? WHERE id = ?')
     const upd = db().prepare("UPDATE outbox SET status = 'in_progress', locked_until = ?, attempts = attempts + 1, error = NULL, updated_at = ? WHERE id = ?")

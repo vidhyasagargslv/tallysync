@@ -6,7 +6,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import {
-  CONTRACT_VERSION, MappingResponseZ, MappingZ, OBJECT_ENTITIES, PULL_ENTITIES, VoucherZ, defaultSyncSettings, mappingReferences,
+  CONTRACT_VERSION, MappingResponseZ, MappingZ, OBJECT_ENTITIES, PULL_ENTITIES, PUSH_ENTITIES, VoucherZ, defaultSyncSettings, mappingReferences,
   type MappingIssue, type MappingValidation, type CompanyLink, type CompanyState, type Heartbeat, type Mapping, type PendingRecord, type PullEntity, type PushResult, type SyncSettings
 } from '@tallysync/contracts'
 import { TallyClient, TallyEngine, TallyUnreachableError, isVoucher, mockConfig, toVoucherInput, voucherRequirements, type MasterIndex, type ObjectKey } from '@tallysync/tally-core'
@@ -268,7 +268,10 @@ export class Agent {
 
   // ---------------------------------------------------------------- push
   async pushPending(engine: TallyEngine, index: MasterIndex): Promise<number> {
-    const recs = await this.api<PendingRecord[]>('GET', '/api/tally-sync/pending?limit=25')
+    // Only ask for enabled push kinds, so disabled records stay 'pending' on the backend (not leased, no attempts).
+    const enabled = PUSH_ENTITIES.filter((e) => this.settings.sync.push[e]?.enabled !== false)
+    if (!enabled.length) return 0
+    const recs = await this.api<PendingRecord[]>('GET', `/api/tally-sync/pending?limit=25&entities=${enabled.join(',')}`)
     let n = 0
     for (const rec of recs) {
       if (this.settings.sync.push[rec.entity]?.enabled === false) continue

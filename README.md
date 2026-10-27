@@ -141,7 +141,7 @@ Implement these with header auth `x-api-key` (agent also sends `x-company-guid`,
 
 | Endpoint | Body / response |
 |---|---|
-| `GET /api/tally-sync/pending?limit=25` | -> `[{ id, entity, attempts, payload }]` (entity: `sales_order`, `purchase_order`, `sales`, `purchase`, `receipt`, `payment`, `credit_note`, `debit_note`, `ledger`, `stock_item`, `unit`, `godown`, `group`, `stock_group`). Mark them in-progress with a lease. |
+| `GET /api/tally-sync/pending?limit=25&entities=sales_order,ledger,...` | -> `[{ id, entity, attempts, payload }]` (entity: `sales_order`, `purchase_order`, `sales`, `purchase`, `receipt`, `payment`, `credit_note`, `debit_note`, `ledger`, `stock_item`, `unit`, `godown`, `group`, `stock_group`). Mark them in-progress with a lease. Optional `entities` (comma-separated push kinds): claim only those; the agent sends its enabled push kinds so disabled ones stay `pending` (not leased, attempts unchanged). Absent = all kinds (backward compatible); empty = nothing. |
 | `POST /api/tally-sync/result` | `{ id, status: synced\|failed, action, error, transient, tallyGuid, tallyMasterId, voucherNumber, requestXml, responseXml }`. `transient=true` -> keep pending and retry. |
 | `POST /api/tally-sync/data/{entity}` | `{ entity, full, sinceAlterId, maxAlterId, company, objects: [{ guid, name, masterid, alterid, parent, data, rawXml, rawJson }], rows }`. Upsert by (entity, guid); `full=true` = snapshot (delete others). `rows` = balance refresh for `stock_summary` (stock items) / `outstanding`, `trial_balance` (ledgers). |
 | `POST /api/tally-sync/status` | heartbeat (store latest). Should not be company-gated. |

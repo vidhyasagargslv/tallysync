@@ -7,6 +7,9 @@ export function GET(req: Request) {
   return handle(() => {
     requireAgent(req)
     const limit = Math.min(Number(new URL(req.url).searchParams.get('limit') ?? 25) || 25, 100)
-    return json(claimPending(limit))
+    // optional ?entities=a,b: only claim these push kinds (agent sends its enabled ones). Absent = all; empty = none.
+    const raw = new URL(req.url).searchParams.get('entities')
+    const entities = raw === null ? null : raw.split(',').map((s) => s.trim()).filter(Boolean)
+    return json(claimPending(limit, entities))
   })
 }
