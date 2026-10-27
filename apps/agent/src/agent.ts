@@ -232,7 +232,7 @@ export class Agent {
       index[entity].set(p.name.toLowerCase(), p.parent ?? '')
       log('info', `auto-created ${what} '${p.name}'${p.parent ? ` under '${p.parent}'` : ''}`)
     }
-    const saleSide = v.kind === 'sales' || v.kind === 'sales_order'
+    const saleSide = v.kind === 'sales' || v.kind === 'sales_order' || v.kind === 'credit_note'
     for (const l of req.ledgers) {
       if (has('ledger', l.name)) continue
       const group = l.role === 'party' ? (saleSide ? m.groups.customers : m.groups.suppliers)

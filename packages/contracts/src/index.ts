@@ -22,7 +22,9 @@ export type ObjectEntity = Exclude<PullEntity, 'stock_summary' | 'outstanding' |
 
 export const MASTER_KINDS = ['group', 'ledger', 'unit', 'stock_group', 'godown', 'stock_item'] as const
 export type MasterKind = (typeof MASTER_KINDS)[number]
-export const VOUCHER_KINDS = ['sales_order', 'sales', 'purchase_order', 'purchase', 'receipt', 'payment'] as const
+export const VOUCHER_KINDS = ['sales_order', 'sales', 'purchase_order', 'purchase', 'receipt', 'payment', 'credit_note', 'debit_note'] as const
+/** Kinds whose party is a customer / whose ledgers come from the sales side of the mapping. */
+export const SALE_SIDE_KINDS: readonly VoucherKind[] = ['sales_order', 'sales', 'credit_note']
 export type VoucherKind = (typeof VOUCHER_KINDS)[number]
 export const PUSH_ENTITIES = [...MASTER_KINDS, ...VOUCHER_KINDS] as const
 export type PushEntity = (typeof PUSH_ENTITIES)[number]
@@ -57,7 +59,13 @@ export const VoucherLineZ = z.object({
 export const VoucherZ = z.object({
   kind: z.enum(VOUCHER_KINDS), number: z.string().min(1), date, party: z.string().min(1),
   lines: z.array(VoucherLineZ).optional(), taxMode: z.enum(['intra', 'inter', 'none']).default('none'),
-  amount: z.number().optional(), narration: z.string().optional(), reference: z.string().optional(), dueDate: date.optional()
+  amount: z.number().optional(), narration: z.string().optional(), reference: z.string().optional(), dueDate: date.optional(),
+  /** credit_note / debit_note: original invoice number; the note is adjusted against it (bill-wise Agst Ref) */
+  againstInvoice: z.string().min(1).optional(),
+  /** credit_note / debit_note: original invoice date (YYYYMMDD), informational for GST */
+  againstInvoiceDate: date.optional()
+}).superRefine((v, ctx) => {
+  if ((v.kind === 'credit_note' || v.kind === 'debit_note') && !(v.lines ?? []).length) ctx.addIssue({ code: 'custom', path: ['lines'], message: 'credit/debit notes need at least one item line' })
 })
 export type Voucher = z.infer<typeof VoucherZ>
 
@@ -78,7 +86,8 @@ export const TrialBalanceRowZ = z.object({ ledger: z.string(), group: z.string()
 // Mapping + sync settings (kept locally by the agent)
 // ---------------------------------------------------------------------------
 export const DEFAULT_VOUCHER_TYPES: Record<VoucherKind, string> = {
-  sales_order: 'Sales Order', sales: 'Sales', purchase_order: 'Purchase Order', purchase: 'Purchase', receipt: 'Receipt', payment: 'Payment'
+  sales_order: 'Sales Order', sales: 'Sales', purchase_order: 'Purchase Order', purchase: 'Purchase', receipt: 'Receipt', payment: 'Payment',
+  credit_note: 'Credit Note', debit_note: 'Debit Note'
 }
 
 export const EntitySettingZ = z.object({ enabled: z.boolean(), intervalSec: z.number().int().min(30) })

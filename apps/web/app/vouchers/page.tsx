@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { report } from '@/lib/repo'
 import { RawLink, Table, fdate, fmt } from '@/lib/ui'
 export const dynamic = 'force-dynamic'
-const CATS = [['', 'All'], ['sales', 'Sales'], ['purchase', 'Purchases'], ['sales_order', 'Sales orders'], ['purchase_order', 'Purchase orders'], ['receipt', 'Receipts'], ['payment', 'Payments'], ['other', 'Other']]
+const CATS = [['', 'All'], ['sales', 'Sales'], ['purchase', 'Purchases'], ['sales_order', 'Sales orders'], ['purchase_order', 'Purchase orders'], ['receipt', 'Receipts'], ['payment', 'Payments'], ['credit_note', 'Credit notes'], ['debit_note', 'Debit notes'], ['other', 'Other']]
 export default async function Vouchers({ searchParams }: { searchParams: Promise<{ category?: string }> }) {
   const { category = '' } = await searchParams
   const rows = report('vouchers', category || null) as any[]

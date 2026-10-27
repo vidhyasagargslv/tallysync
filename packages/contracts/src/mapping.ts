@@ -50,10 +50,15 @@ export const TallyMappingZ = z.object({
   version: z.string().default('1'),
   voucherTypes: z.object({
     sales_order: name.default('Sales Order'), sales: name.default('Sales'), purchase_order: name.default('Purchase Order'),
-    purchase: name.default('Purchase'), receipt: name.default('Receipt'), payment: name.default('Payment')
+    purchase: name.default('Purchase'), receipt: name.default('Receipt'), payment: name.default('Payment'),
+    credit_note: name.default('Credit Note'), debit_note: name.default('Debit Note')
   }).strict().default({}),
   sales: LedgerSelectZ.default({ default: 'Sales' }),
   purchase: LedgerSelectZ.default({ default: 'Purchase' }),
+  /** credit note (sales return) ledger per line; omit to reuse `sales` */
+  salesReturn: LedgerSelectZ.optional(),
+  /** debit note (purchase return) ledger per line; omit to reuse `purchase` */
+  purchaseReturn: LedgerSelectZ.optional(),
   /** output tax (sales side) */
   tax: TaxSetZ.default({}),
   /** input tax (purchase side); omit to use `tax` */
@@ -127,7 +132,8 @@ export function applyRounding(total: number, r: RoundOff): number {
 export function mappingReferences(m: TallyMapping) {
   const refs: Array<{ kind: MappingIssue['kind']; name: string; path: string; group?: string; dutyHead?: string }> = []
   const L = (n: string, path: string, group: string, dutyHead?: string) => refs.push({ kind: 'ledger', name: n, path, group, dutyHead })
-  for (const [side, sel, grp] of [['sales', m.sales, m.groups.salesLedgers], ['purchase', m.purchase, m.groups.purchaseLedgers]] as const) {
+  for (const [side, sel, grp] of [['sales', m.sales, m.groups.salesLedgers], ['purchase', m.purchase, m.groups.purchaseLedgers], ['salesReturn', m.salesReturn, m.groups.salesLedgers], ['purchaseReturn', m.purchaseReturn, m.groups.purchaseLedgers]] as const) {
+    if (!sel) continue
     L(sel.default, `${side}.default`, grp)
     sel.rules.forEach((r, i) => L(r.ledger, `${side}.rules[${i}].ledger`, grp))
     for (const [k, v] of Object.entries(sel.itemGroups)) L(v, `${side}.itemGroups.${k}`, grp)

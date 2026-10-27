@@ -8,7 +8,8 @@
   "voucherTypes": {
     "sales_order": "Sales Order", "sales": "Sales",
     "purchase_order": "Purchase Order", "purchase": "Purchase",
-    "receipt": "Receipt", "payment": "Payment"
+    "receipt": "Receipt", "payment": "Payment",
+    "credit_note": "Credit Note", "debit_note": "Debit Note"
   },
 
   // Sales ledger per line. Order: items > itemGroups > rules (first match) > default.
@@ -25,6 +26,11 @@
 
   // Purchase ledger per line, same rules as sales
   "purchase": { "default": "Purchase", "rules": [] },
+
+  // Credit note (sales return) / debit note (purchase return) ledger per line, same rule format.
+  // Remove to reuse "sales" / "purchase". Credit notes use output tax ("tax"), debit notes input tax ("purchaseTax").
+  // "salesReturn": { "default": "Sales Returns", "rules": [] },
+  // "purchaseReturn": { "default": "Purchase Returns", "rules": [] },
 
   // Output GST ledgers (sales side). byRate overrides per GST rate.
   "tax": {

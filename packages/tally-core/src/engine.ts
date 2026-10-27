@@ -5,7 +5,7 @@
 import { selectLedger, taxLedgersFor, type CompanyLink, type PushResult, type Mapping, type MasterKind, type PulledObject, type PushEntity, type Voucher } from '@tallysync/contracts'
 import { TallyClient } from './client.js'
 import { OBJECTS, buildCollectionExport, buildLookup, tdlString, type ObjectKey } from './exports.js'
-import { buildMasterXml, buildVoucherXml, importEnvelope, voucherPostings, type ImportAction, type MasterInput, type VoucherInput } from './imports.js'
+import { buildMasterXml, buildVoucherXml, importEnvelope, isSaleSideKind, voucherPostings, type ImportAction, type MasterInput, type VoucherInput } from './imports.js'
 import { normalize, objectGuid, objectName } from './normalize.js'
 import { exportError, parseImportResponse } from './responses.js'
 import { extractElements, firstTagText, innerOf, num, parseXml, text } from './xml.js'
@@ -126,17 +126,17 @@ export class TallyEngine {
   }
 }
 
-export const isVoucher = (e: string) => ['sales_order', 'sales', 'purchase_order', 'purchase', 'receipt', 'payment'].includes(e)
+export const isVoucher = (e: string) => ['sales_order', 'sales', 'purchase_order', 'purchase', 'receipt', 'payment', 'credit_note', 'debit_note'].includes(e)
 
 export type MasterIndex = Record<'ledger' | 'group' | 'voucher_type' | 'godown' | 'unit' | 'stock_group' | 'stock_item', Map<string, string>>
 export interface VoucherContext { itemGroup?: (item: string) => string | undefined }
 
 /** Neutral voucher + declarative mapping -> Tally voucher input (rule-based ledger per line, per-rate tax, round-off). */
 export function toVoucherInput(v: Voucher, m: Mapping, ctx: VoucherContext = {}): VoucherInput {
-  const saleSide = v.kind === 'sales' || v.kind === 'sales_order'
+  const saleSide = isSaleSideKind(v.kind)
   const map = (dict: Record<string, string>, k: string) => dict[k] ?? k
   const supply = v.taxMode === 'inter' ? 'interstate' : 'local'
-  const sel = saleSide ? m.sales : m.purchase
+  const sel = v.kind === 'credit_note' ? m.salesReturn ?? m.sales : v.kind === 'debit_note' ? m.purchaseReturn ?? m.purchase : saleSide ? m.sales : m.purchase
   const taxSet = saleSide ? m.tax : m.purchaseTax ?? m.tax
   return {
     ...v,
@@ -159,7 +159,7 @@ export function toVoucherInput(v: Voucher, m: Mapping, ctx: VoucherContext = {})
 
 /** Masters a voucher needs in Tally, with the role each ledger plays (used for validation + auto-create). */
 export function voucherRequirements(input: VoucherInput) {
-  const saleSide = input.kind === 'sales' || input.kind === 'sales_order'
+  const saleSide = isSaleSideKind(input.kind)
   const ledgers: Array<{ name: string; role: 'party' | 'sales' | 'purchase' | 'tax' | 'roundOff' | 'cash'; head?: 'cgst' | 'sgst' | 'igst'; rate?: number }> = [{ name: input.party, role: 'party' }]
   const items: string[] = [], godowns: string[] = []
   if (input.kind === 'receipt' || input.kind === 'payment') ledgers.push({ name: input.cashLedger ?? 'Cash', role: 'cash' })

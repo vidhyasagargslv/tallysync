@@ -1,7 +1,11 @@
 import { esc } from './xml.js'
 
 export type MasterKind = 'group' | 'ledger' | 'unit' | 'stock_group' | 'godown' | 'stock_item'
-export type VoucherKind = 'sales_order' | 'sales' | 'purchase_order' | 'purchase' | 'receipt' | 'payment'
+export type VoucherKind = 'sales_order' | 'sales' | 'purchase_order' | 'purchase' | 'receipt' | 'payment' | 'credit_note' | 'debit_note'
+/** Customer-side kinds (party = debtor, ledgers from sales mapping). */
+export const isSaleSideKind = (k: VoucherKind) => k === 'sales' || k === 'sales_order' || k === 'credit_note'
+/** Kinds where stock comes in and the line ledgers are debited: purchase side, and credit notes (sales return). */
+const isStockInKind = (k: VoucherKind) => k === 'purchase' || k === 'purchase_order' || k === 'credit_note'
 export type ImportAction = 'Create' | 'Alter'
 
 export const MASTER_TAG: Record<MasterKind, string> = {
@@ -9,7 +13,8 @@ export const MASTER_TAG: Record<MasterKind, string> = {
 }
 
 export const VOUCHER_TYPE_NAME: Record<VoucherKind, string> = {
-  sales_order: 'Sales Order', sales: 'Sales', purchase_order: 'Purchase Order', purchase: 'Purchase', receipt: 'Receipt', payment: 'Payment'
+  sales_order: 'Sales Order', sales: 'Sales', purchase_order: 'Purchase Order', purchase: 'Purchase', receipt: 'Receipt', payment: 'Payment',
+  credit_note: 'Credit Note', debit_note: 'Debit Note'
 }
 
 export interface GroupInput { name: string; parent: string }
@@ -70,6 +75,8 @@ export interface VoucherInput {
   dueDate?: string
   voucherTypeName?: string // mapping override
   roundOff?: RoundOffInput
+  againstInvoice?: string // credit/debit note: original invoice (bill-wise Agst Ref)
+  againstInvoiceDate?: string
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100
@@ -244,7 +251,7 @@ export interface VoucherPostings {
 
 /** Every posting of an inventory voucher: per-line ledgers, tax per ledger, round-off. Sums balance exactly. */
 export function voucherPostings(v: VoucherInput): VoucherPostings {
-  const isSaleSide = v.kind === 'sales' || v.kind === 'sales_order'
+  const isSaleSide = isSaleSideKind(v.kind)
   const account = v.account ?? (isSaleSide ? 'Sales' : 'Purchase')
   const defTax = v.taxLedgers ?? { cgst: 'CGST', sgst: 'SGST', igst: 'IGST' }
   const lines = (v.lines ?? []).map((l) => ({ ...l, amount: r2(l.qty * l.rate), ledger: l.ledger ?? account }))
@@ -288,7 +295,7 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
   const vchType = v.voucherTypeName ?? VOUCHER_TYPE_NAME[v.kind]
   const t = computeTotals(v)
   const isOrder = v.kind === 'sales_order' || v.kind === 'purchase_order'
-  const isSaleSide = v.kind === 'sales' || v.kind === 'sales_order'
+  const isNote = v.kind === 'credit_note' || v.kind === 'debit_note'
   const isInventory = v.kind !== 'receipt' && v.kind !== 'payment'
   const view = isInventory ? 'Invoice Voucher View' : 'Accounting Voucher View'
   const attrs =
@@ -313,10 +320,12 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
   if (isInventory) {
     head.push(`<ISINVOICE>${isOrder ? 'No' : 'Yes'}</ISINVOICE>`)
     if (isOrder) head.push(`<BASICORDERREF>${esc(v.number)}</BASICORDERREF>`)
+    if (isNote && v.againstInvoice) head.push(`<ORIGINALINVOICENO>${esc(v.againstInvoice)}</ORIGINALINVOICENO>${v.againstInvoiceDate ? `<ORIGINALINVOICEDATE>${v.againstInvoiceDate}</ORIGINALINVOICEDATE>` : ''}`)
     const p = voucherPostings(v)
-    // sale side: stock goes out (credit, positive); purchase side: stock comes in (debit, negative)
-    const sign = isSaleSide ? 1 : -1
-    const deemed = !isSaleSide
+    // stock out (sales, sales order, debit note): line ledgers credited (positive), party debited.
+    // stock in (purchase, purchase order, credit note): line ledgers debited (negative), party credited.
+    const sign = isStockInKind(v.kind) ? -1 : 1
+    const deemed = sign === -1
     for (const l of p.lines) {
       const unit = l.unit ?? 'Nos'
       const godown = l.godown || 'Main Location'
@@ -331,11 +340,12 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
           `</ALLINVENTORYENTRIES.LIST>`
       )
     }
+    const billRef = isNote && v.againstInvoice ? v.againstInvoice : v.number
     const bill = isOrder
       ? ''
-      : `<BILLALLOCATIONS.LIST><NAME>${esc(v.number)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${amt(-sign * p.total)}</AMOUNT></BILLALLOCATIONS.LIST>`
-    // party: sale = debit (negative), purchase = credit (positive)
-    body.push(ledgerEntry(v.party, isSaleSide, -sign * p.total, `<ISPARTYLEDGER>Yes</ISPARTYLEDGER>${bill}`))
+      : `<BILLALLOCATIONS.LIST><NAME>${esc(billRef)}</NAME><BILLTYPE>${isNote && v.againstInvoice ? 'Agst Ref' : 'New Ref'}</BILLTYPE><AMOUNT>${amt(-sign * p.total)}</AMOUNT></BILLALLOCATIONS.LIST>`
+    // party: opposite side of the line ledgers (debit = negative + deemed positive)
+    body.push(ledgerEntry(v.party, sign === 1, -sign * p.total, `<ISPARTYLEDGER>Yes</ISPARTYLEDGER>${bill}`))
     for (const t of p.tax) body.push(ledgerEntry(t.ledger, deemed, sign * t.amount))
     if (p.roundOff) { const a = sign * p.roundOff.amount; body.push(ledgerEntry(p.roundOff.ledger, a < 0, a)) }
   } else {

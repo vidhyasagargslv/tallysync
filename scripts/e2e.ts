@@ -302,6 +302,39 @@ const html = await (await fetch(base + '/orders?type=sales_order')).text()
 check('SO form picker lists local customer + items', html.includes('Kiran Traders') && html.includes('Bolt'))
 check('nav shows Create + Tally data sections', /Customers.*Suppliers.*Items.*Sales Orders.*Purchase Orders/s.test(html) && /Stock.*Ledgers.*Vouchers.*Reports/s.test(html))
 
+console.log('8b. credit note + debit note -> Tally')
+{
+  const partyAmt = (xml: string, party: string) => Number(new RegExp(`<LEDGERNAME>${party}</LEDGERNAME><ISDEEMEDPOSITIVE>(Yes|No)</ISDEEMEDPOSITIVE><AMOUNT>(-?[\\d.]+)</AMOUNT><ISPARTYLEDGER>`).exec(xml)?.[2])
+  const cn = { number: 'CN-1001', date: '20260425', party: 'Ravi Stores', taxMode: 'intra', againstInvoice: 'SO-1001', againstInvoiceDate: '20260415', narration: 'Damaged goods returned', lines: [{ item: 'Widget', qty: 2, rate: 100, gstRate: 18 }] }
+  const dn = { number: 'DN-1001', date: '20260426', party: 'Supreme Supplies', taxMode: 'inter', lines: [{ item: 'Gadget', qty: 1, rate: 150, gstRate: 18 }] }
+  r = await api('POST', '/api/records', { entity: 'credit_note', payload: cn }); const cnId = r.body.id
+  check('credit note created as pending (priority voucher)', r.status === 201 && r.body.status === 'pending', r.body)
+  r = await api('POST', '/api/records', { entity: 'debit_note', payload: dn }); const dnId = r.body.id
+  check('debit note created as pending', r.status === 201 && r.body.status === 'pending', r.body)
+  r = await api('POST', '/api/records', { entity: 'credit_note', payload: { number: 'CN-BAD', date: '20260425', party: 'Ravi Stores' } })
+  check('credit note without lines rejected (400)', r.status === 400, r.body)
+  await agent.cycle({ forcePull: true })
+  const cnr = await st(cnId), dnr = await st(dnId)
+  check('credit note synced (balanced in Tally)', cnr.status === 'synced' && cnr.tallyGuid && cnr.voucherNumber === 'CN-1001', [cnr.status, cnr.error])
+  check('debit note synced (balanced in Tally)', dnr.status === 'synced' && dnr.tallyGuid && dnr.voucherNumber === 'DN-1001', [dnr.status, dnr.error])
+  const cx = cnr.requestXml ?? '', dx = dnr.requestXml ?? ''
+  check('credit note: Credit Note type, party credited, stock in', /VCHTYPE="Credit Note"/.test(cx) && partyAmt(cx, 'Ravi Stores') === 236 && /<ALLINVENTORYENTRIES\.LIST><STOCKITEMNAME>Widget<\/STOCKITEMNAME><ISDEEMEDPOSITIVE>Yes<\/ISDEEMEDPOSITIVE><RATE>[^<]*<\/RATE><AMOUNT>-200\.00/.test(cx), cx.slice(0, 1500))
+  check('credit note: output tax debited + Agst Ref original invoice', /<ISDEEMEDPOSITIVE>Yes<\/ISDEEMEDPOSITIVE><AMOUNT>-18\.00<\/AMOUNT>/.test(cx) && /<NAME>SO-1001<\/NAME><BILLTYPE>Agst Ref<\/BILLTYPE><AMOUNT>236\.00/.test(cx) && /<ORIGINALINVOICENO>SO-1001<\/ORIGINALINVOICENO>/.test(cx))
+  check('debit note: Debit Note type, party debited, input IGST credited, New Ref', /VCHTYPE="Debit Note"/.test(dx) && partyAmt(dx, 'Supreme Supplies') === -177 && /<ISDEEMEDPOSITIVE>No<\/ISDEEMEDPOSITIVE><AMOUNT>27\.00<\/AMOUNT>/.test(dx) && /<NAME>DN-1001<\/NAME><BILLTYPE>New Ref<\/BILLTYPE><AMOUNT>-177\.00/.test(dx), dx.slice(0, 1500))
+  r = await api('POST', '/api/records', { entity: 'credit_note', payload: { ...cn, narration: 'edited' } })
+  await agent.cycle({ forcePull: true })
+  check('re-saved credit note pushes as Alter', (await st(cnId)).action === 'Alter' && (await st(cnId)).status === 'synced')
+  r = await api('GET', '/api/reports/vouchers?category=credit_note')
+  check('credit note pulled back (1)', r.body.length === 1 && r.body[0].voucherNumber === 'CN-1001', r.body)
+  r = await api('GET', '/api/reports/vouchers?category=debit_note')
+  check('debit note pulled back (1)', r.body.length === 1 && r.body[0].voucherNumber === 'DN-1001', r.body)
+  for (const p of ['/orders?type=credit_note', '/orders?type=debit_note', '/vouchers?category=credit_note']) {
+    const res = await fetch(base + p); if (res.status !== 200) check(`page ${p}`, false, res.status)
+  }
+  const h = await (await fetch(base + '/orders?type=credit_note')).text()
+  check('credit note page: form + list with sync status', h.includes('credit note (sales return)') && h.includes('Against invoice') && h.includes('CN-1001') && /synced/i.test(h))
+}
+
 console.log('9. manual sync from the web app')
 const waitReq = async (id: string, ms = 10_000) => {
   const t0 = Date.now()

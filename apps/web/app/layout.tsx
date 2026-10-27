@@ -16,6 +16,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <Link href="/items">Items</Link>
         <Link href="/orders?type=sales_order">Sales Orders</Link>
         <Link href="/orders?type=purchase_order">Purchase Orders</Link>
+        <Link href="/orders?type=credit_note">Credit Notes</Link>
+        <Link href="/orders?type=debit_note">Debit Notes</Link>
         <Link href="/orders?type=masters">All masters outbox</Link>
         <div className="sec">Tally data</div>
         <Link href="/stock">Stock</Link>

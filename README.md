@@ -14,7 +14,7 @@ Shared code (npm workspaces): `packages/contracts` (zod schemas = the API contra
 (Tally XML builders/parsers, full-field pull, ALTERID incremental, idempotent push, mock Tally).
 
 ## How it works
-- User creates Sales Orders / Purchase Orders (or masters) in the app -> stored in `outbox` as `pending`.
+- User creates Sales Orders / Purchase Orders / Credit Notes / Debit Notes (or masters) in the app -> stored in `outbox` as `pending`.
 - Agent loop (every 15 s): **company gate** -> `GET /api/tally-sync/pending` -> push each to Tally (lookup first:
   Create or Alter, so no duplicates) -> `POST /api/tally-sync/result` (synced + Tally GUID / voucher no, or failed + Tally's error).
 - Timed pulls of every entity (all on by default, toggle each on the agent page): company, group, ledger, cost_centre,
@@ -64,10 +64,17 @@ CLI: `tallysync-agent.exe --version`, `configure --backend URL --key KEY --compa
 
 ## Creating data in the app
 Create (pushes to Tally): **Customers** (ledger under `groups.customers`), **Suppliers** (`groups.suppliers`), **Items**
-(unit, stock group, HSN/SAC, GST rate, opening stock per godown), **Sales Orders**, **Purchase Orders**. Every save queues a
+(unit, stock group, HSN/SAC, GST rate, opening stock per godown), **Sales Orders**, **Purchase Orders**, **Credit Notes**, **Debit Notes**. Every save queues a
 record (pending -> synced/failed, error, Retry, request/response XML). Edits (`PUT /api/records/:id`; name/number fixed)
 push as Alter. Order pickers merge local masters with masters pulled from Tally. A voucher that uses a local master not yet
 synced waits ("waiting for ...") until that master syncs; masters always go before vouchers.
+
+Credit / debit notes (`credit_note`, `debit_note`) take the same payload as sales/purchase (party, date, number, item lines,
+GST mode, narration) plus optional `againstInvoice` (+ `againstInvoiceDate`). Credit note (sales return): party credited,
+sales-return ledger + output GST debited, stock comes in. Debit note (purchase return): party debited, purchase-return
+ledger + input GST credited, stock goes out. With `againstInvoice` the party's bill allocation is `Agst Ref <invoice>`,
+otherwise `New Ref <note number>`. Ledgers come from mapping `salesReturn` / `purchaseReturn` (default: reuse `sales` /
+`purchase`); voucher type names from `voucherTypes.credit_note` / `voucherTypes.debit_note` (default `Credit Note` / `Debit Note`).
 
 ## Manual sync (when you don't want to wait for the 15 s cycle)
 1. **Web app dashboard -> Manual sync:** Sync now (push + pull), Push only, Pull only, Pull one entity, Full re-pull
@@ -113,6 +120,8 @@ difference is posted to the round-off ledger so the voucher balances.
     "itemGroups": { "Services": "Service Income" }
   },
   "purchase": { "default": "Purchase" },
+  "salesReturn": { "default": "Sales Returns" },       // credit notes (optional; defaults to "sales")
+  "purchaseReturn": { "default": "Purchase Returns" }, // debit notes (optional; defaults to "purchase")
   "tax": { "cgst": "CGST", "sgst": "SGST", "igst": "IGST", "byRate": { "5": { "cgst": "CGST 2.5%", "sgst": "SGST 2.5%", "igst": "IGST 5%" } } },
   "roundOff": { "enabled": true, "ledger": "Round Off", "mode": "nearest", "precision": 1 },
   "cashBank": { "receipt": "Cash", "payment": "HDFC Bank" },
@@ -132,7 +141,7 @@ Implement these with header auth `x-api-key` (agent also sends `x-company-guid`,
 
 | Endpoint | Body / response |
 |---|---|
-| `GET /api/tally-sync/pending?limit=25` | -> `[{ id, entity, attempts, payload }]` (entity: `sales_order`, `purchase_order`, `sales`, `purchase`, `receipt`, `payment`, `ledger`, `stock_item`, `unit`, `godown`, `group`, `stock_group`). Mark them in-progress with a lease. |
+| `GET /api/tally-sync/pending?limit=25` | -> `[{ id, entity, attempts, payload }]` (entity: `sales_order`, `purchase_order`, `sales`, `purchase`, `receipt`, `payment`, `credit_note`, `debit_note`, `ledger`, `stock_item`, `unit`, `godown`, `group`, `stock_group`). Mark them in-progress with a lease. |
 | `POST /api/tally-sync/result` | `{ id, status: synced\|failed, action, error, transient, tallyGuid, tallyMasterId, voucherNumber, requestXml, responseXml }`. `transient=true` -> keep pending and retry. |
 | `POST /api/tally-sync/data/{entity}` | `{ entity, full, sinceAlterId, maxAlterId, company, objects: [{ guid, name, masterid, alterid, parent, data, rawXml, rawJson }], rows }`. Upsert by (entity, guid); `full=true` = snapshot (delete others). `rows` = balance refresh for `stock_summary` (stock items) / `outstanding`, `trial_balance` (ledgers). |
 | `POST /api/tally-sync/status` | heartbeat (store latest). Should not be company-gated. |

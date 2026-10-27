@@ -238,7 +238,7 @@ export function report(name: string, category?: string | null): unknown {
   if (name === 'trial-balance') return trialBalance(ledgerRows())
   if (name === 'vouchers') {
     const base = new Map(objects('voucher_type').map((v) => [v.name, v.parent || v.name]))
-    const labels: Record<string, string> = { sales: 'Sales', purchase: 'Purchase', sales_order: 'Sales Order', purchase_order: 'Purchase Order', receipt: 'Receipt', payment: 'Payment' }
+    const labels: Record<string, string> = { sales: 'Sales', purchase: 'Purchase', sales_order: 'Sales Order', purchase_order: 'Purchase Order', receipt: 'Receipt', payment: 'Payment', credit_note: 'Credit Note', debit_note: 'Debit Note' }
     const known = new Set(Object.values(labels))
     const rows = objects('voucher').filter((v) => {
       if (!category) return true
