@@ -321,6 +321,15 @@ console.log('8b. credit note + debit note -> Tally')
   r = await api('GET', '/api/tally-sync/pending?limit=25&entities=', undefined, { 'x-api-key': newKey, 'x-company-guid': agent.settings.lockedCompany!.guid })
   check('pending with empty entities list claims nothing', r.status === 200 && Array.isArray(r.body) && r.body.length === 0, r)
   agent.saveSettings({ sync: { ...agent.settings.sync, push: { ...push, credit_note: { enabled: true }, debit_note: { enabled: true } } } })
+  // master type disabled -> voucher using an unsynced local master of that type is not held
+  r = await api('POST', '/api/records', { entity: 'stock_item', payload: { name: 'Washer', parent: 'No Such Group', baseUnit: 'Nos' } }); const washerId = r.body.id
+  agent.saveSettings({ sync: { ...agent.settings.sync, push: { ...agent.settings.sync.push, stock_item: { enabled: false } } } })
+  r = await api('POST', '/api/records', { entity: 'credit_note', payload: { number: 'CN-1002', date: '20260427', party: 'Ravi Stores', taxMode: 'none', lines: [{ item: 'Washer', qty: 1, rate: 10 }] } }); const cn2Id = r.body.id
+  await agent.cycle()
+  const [w, cn2] = [await st(washerId), await st(cn2Id)]
+  check('disabled master type does not hold voucher (voucher goes, master stays pending)', w.status === 'pending' && w.attempts === 0 && cn2.status !== 'pending' && !/waiting for/.test(cn2.error ?? ''), [[w.status, w.attempts], [cn2.status, cn2.error]])
+  agent.saveSettings({ sync: { ...agent.settings.sync, push: { ...agent.settings.sync.push, stock_item: { enabled: true } } } })
+  await api('PUT', `/api/records/${washerId}`, { name: 'Washer', parent: 'Finished Goods', baseUnit: 'Nos' })
   await agent.cycle({ forcePull: true })
   const cnr = await st(cnId), dnr = await st(dnId)
   check('credit note synced (balanced in Tally)', cnr.status === 'synced' && cnr.tallyGuid && cnr.voucherNumber === 'CN-1001', [cnr.status, cnr.error])

@@ -93,6 +93,8 @@ export function claimPending(limit: number, entities: string[] | null = null): P
       if (isVoucher(r.entity)) {
         const waiting = voucherDeps(J(r.payload_json)).filter((k) => {
           const m = masterStatus.get(k) as { status: string } | undefined
+          // hold only on masters whose push type the agent will actually push (disabled types never sync from here)
+          if (entities && !entities.includes(k.slice(0, k.indexOf(':')))) return false
           return m && m.status !== 'synced' && !inBatch.has(k)
         })
         if (waiting.length) {
