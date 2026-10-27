@@ -197,8 +197,8 @@ export class Agent {
       if (index[r.kind].has(r.name.toLowerCase())) continue
       const canCreate = r.kind === 'ledger' && !!r.group && m.autoCreate.ledgers
       issues.push({
-        level: canCreate ? 'warning' : 'error', kind: r.kind, name: r.name, path: r.path, autoCreate: canCreate,
-        message: `${r.kind.replace('_', ' ')} '${r.name}' (${r.path}) not found in Tally${canCreate ? `; will be auto-created under '${r.group}' when first used` : ''}`
+        level: canCreate || r.optional ? 'warning' : 'error', kind: r.kind, name: r.name, path: r.path, autoCreate: canCreate,
+        message: `${r.kind.replace('_', ' ')} '${r.name}' (${r.path}) not found in Tally${canCreate ? `; will be auto-created under '${r.group}' when first used` : r.optional ? '; needed only when a voucher uses it' : ''}`
       })
     }
     return { hash: this.mappingCache?.hash ?? 'local', checkedAt: new Date().toISOString(), company: this.settings.lockedCompany?.name ?? '', ok: !issues.some((i) => i.level === 'error'), issues }
@@ -237,7 +237,8 @@ export class Agent {
       if (has('ledger', l.name)) continue
       const group = l.role === 'party' ? (saleSide ? m.groups.customers : m.groups.suppliers)
         : l.role === 'sales' ? m.groups.salesLedgers : l.role === 'purchase' ? m.groups.purchaseLedgers
-        : l.role === 'tax' ? m.groups.taxLedgers : l.role === 'roundOff' ? m.groups.roundOff : null
+        : l.role === 'tax' ? m.groups.taxLedgers : l.role === 'roundOff' ? m.groups.roundOff
+        : l.role === 'discount' ? (saleSide ? m.groups.discountAllowed : m.groups.discountReceived) : null
       const allowed = l.role === 'party' ? m.autoCreate.parties : l.role === 'cash' ? false : m.autoCreate.ledgers
       const flag = l.role === 'party' ? 'autoCreate.parties' : 'autoCreate.ledgers'
       if (!allowed || !group) { problems.push(`${l.role === 'party' ? 'Party ledger' : `${l.role} ledger`} '${l.name}' not found in Tally. Create it in Tally, map it in tally-mapping.json${l.role !== 'cash' ? `, or enable ${flag}` : ''}`); continue }

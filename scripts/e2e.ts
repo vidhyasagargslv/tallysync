@@ -352,6 +352,39 @@ console.log('8b. credit note + debit note -> Tally')
   check('credit note page: form + list with sync status', h.includes('credit note (sales return)') && h.includes('Against invoice') && h.includes('CN-1001') && /synced/i.test(h))
 }
 
+console.log('8c. trade discount -> discount ledger (items at gross, GST on net) + supplier invoice no')
+{
+  const amts = (xml: string) => [...xml.matchAll(/<(?:LEDGERENTRIES|ALLINVENTORYENTRIES)\.LIST>.*?<AMOUNT>(-?[\d.]+)<\/AMOUNT>/gs)].map((m) => Number(m[1]))
+  const ent = (xml: string, ledger: string) => new RegExp(`<LEDGERNAME>${ledger}</LEDGERNAME><ISDEEMEDPOSITIVE>(Yes|No)</ISDEEMEDPOSITIVE><AMOUNT>(-?[\\d.]+)</AMOUNT>`).exec(xml)?.slice(1)
+  r = await api('POST', '/api/records', { entity: 'sales', payload: { number: 'SI-D1', date: '20260428', party: 'Ravi Stores', taxMode: 'intra', discount: 35, lines: [{ item: 'Widget', qty: 3, rate: 100, gstRate: 18 }, { item: 'Widget', qty: 1, rate: 50, gstRate: 18, discount: 5 }] } }); const sId = r.body.id
+  check('sales with discount accepted', r.status === 201, r.body)
+  r = await api('POST', '/api/records', { entity: 'purchase', payload: { number: 'GRN-D1', date: '20260428', party: 'Supreme Supplies', taxMode: 'inter', discount: 30, supplierInvoiceNo: 'SUP/77', supplierInvoiceDate: '20260427', lines: [{ item: 'Gadget', qty: 2, rate: 150, gstRate: 18 }] } }); const pId = r.body.id
+  check('purchase with discount + supplier invoice accepted', r.status === 201, r.body)
+  r = await api('POST', '/api/records', { entity: 'sales', payload: { number: 'SI-BAD', date: '20260428', party: 'Ravi Stores', discount: 999, lines: [{ item: 'Widget', qty: 1, rate: 10 }] } })
+  check('discount above line value rejected (400)', r.status === 400, r.body)
+  await agent.cycle({ forcePull: true })
+  const s0 = await st(sId)
+  check('missing discount ledger + autoCreate off -> clear failure', s0.status === 'failed' && /discount ledger 'Discount Allowed' not found/.test(s0.error ?? ''), s0.error)
+  writeMapping({ ...rich, version: '4', autoCreate: { parties: true, ledgers: true, items: false } })
+  for (const id of [sId, pId]) await api('POST', `/api/records/${id}/retry`)
+  await agent.cycle({ forcePull: true })
+  const s1 = await st(sId), p1 = await st(pId)
+  check('discounted sales synced (balanced)', s1.status === 'synced', [s1.status, s1.error])
+  check('discounted purchase synced (balanced)', p1.status === 'synced', [p1.status, p1.error])
+  const sx = s1.requestXml ?? '', px = p1.requestXml ?? ''
+  check('sales: entries sum to 0', Math.abs(amts(sx).reduce((a, b) => a + b, 0)) < 0.005, amts(sx))
+  check('sales: items at gross rate (300 + 50 credited)', /<AMOUNT>300\.00<\/AMOUNT>/.test(sx) && /<AMOUNT>50\.00<\/AMOUNT>/.test(sx))
+  check('sales: Discount Allowed debited 40 (35 invoice + 5 line)', JSON.stringify(ent(sx, 'Discount Allowed')) === '["Yes","-40.00"]', ent(sx, 'Discount Allowed'))
+  check('sales: GST on net 310 -> CGST/SGST 27.90 each', /<AMOUNT>27\.90<\/AMOUNT>.*<AMOUNT>27\.90<\/AMOUNT>/s.test(sx), sx.slice(0, 2500))
+  const party = Number(ent(sx, 'Ravi Stores')?.[1])
+  check('sales: party debited gross - discount + tax (365.80, or rounded)', Math.abs(-party - 365.8) <= 1, party)
+  check('purchase: entries sum to 0', Math.abs(amts(px).reduce((a, b) => a + b, 0)) < 0.005, amts(px))
+  check('purchase: Discount Received credited 30', JSON.stringify(ent(px, 'Discount Received')) === '["No","30.00"]', ent(px, 'Discount Received'))
+  check('purchase: IGST on net 270 = 48.60, items at gross 300', /<AMOUNT>-48\.60<\/AMOUNT>/.test(px) && /<AMOUNT>-300\.00<\/AMOUNT>/.test(px), px.slice(0, 2500))
+  check('purchase: supplier invoice -> REFERENCE/REFERENCEDATE + bill ref', /<REFERENCE>SUP\/77<\/REFERENCE><REFERENCEDATE>20260427<\/REFERENCEDATE>/.test(px) && /<NAME>SUP\/77<\/NAME><BILLTYPE>New Ref/.test(px))
+  fs.copyFileSync(path.join(root, 'apps/web/config/tally-mapping.jsonc'), mappingFile); { const t = new Date(Date.now() + 120_000); fs.utimesSync(mappingFile, t, t) }
+}
+
 console.log('9. manual sync from the web app')
 const waitReq = async (id: string, ms = 10_000) => {
   const t0 = Date.now()

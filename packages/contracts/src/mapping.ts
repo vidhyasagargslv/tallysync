@@ -64,12 +64,19 @@ export const TallyMappingZ = z.object({
   /** input tax (purchase side); omit to use `tax` */
   purchaseTax: TaxSetZ.optional(),
   roundOff: RoundOffZ.default({}),
+  /** trade-discount ledgers (used only when a voucher carries a discount). Returns fall back to sales / purchase. */
+  discountLedgers: z.object({
+    sales: name.default('Discount Allowed'), purchase: name.default('Discount Received'),
+    salesReturn: name.optional(), purchaseReturn: name.optional()
+  }).strict().default({}),
   cashBank: z.object({ receipt: name.default('Cash'), payment: name.default('Cash') }).strict().default({}),
   defaultGodown: name.default('Main Location'),
   groups: z.object({
     customers: name.default('Sundry Debtors'), suppliers: name.default('Sundry Creditors'),
     salesLedgers: name.default('Sales Accounts'), purchaseLedgers: name.default('Purchase Accounts'),
     taxLedgers: name.default('Duties & Taxes'), roundOff: name.default('Indirect Expenses'),
+    /** groups for auto-created discount ledgers */
+    discountAllowed: name.default('Indirect Expenses'), discountReceived: name.default('Indirect Incomes'),
     /** stock group for auto-created items ('' = Primary) */
     items: z.string().default(''),
     defaultUnit: name.default('Nos')
@@ -130,7 +137,8 @@ export function applyRounding(total: number, r: RoundOff): number {
 
 /** Every master name the mapping refers to, for validation against Tally. */
 export function mappingReferences(m: TallyMapping) {
-  const refs: Array<{ kind: MappingIssue['kind']; name: string; path: string; group?: string; dutyHead?: string }> = []
+  /** optional = only needed when used (reported as a warning, not an error, when missing) */
+  const refs: Array<{ kind: MappingIssue['kind']; name: string; path: string; group?: string; dutyHead?: string; optional?: boolean }> = []
   const L = (n: string, path: string, group: string, dutyHead?: string) => refs.push({ kind: 'ledger', name: n, path, group, dutyHead })
   for (const [side, sel, grp] of [['sales', m.sales, m.groups.salesLedgers], ['purchase', m.purchase, m.groups.purchaseLedgers], ['salesReturn', m.salesReturn, m.groups.salesLedgers], ['purchaseReturn', m.purchaseReturn, m.groups.purchaseLedgers]] as const) {
     if (!sel) continue
@@ -149,12 +157,16 @@ export function mappingReferences(m: TallyMapping) {
     }
   }
   if (m.roundOff.enabled) L(m.roundOff.ledger, 'roundOff.ledger', m.groups.roundOff)
+  const d = m.discountLedgers
+  for (const [k, n, g] of [['sales', d.sales, m.groups.discountAllowed], ['purchase', d.purchase, m.groups.discountReceived], ['salesReturn', d.salesReturn, m.groups.discountAllowed], ['purchaseReturn', d.purchaseReturn, m.groups.discountReceived]] as const)
+    if (n) refs.push({ kind: 'ledger', name: n, path: `discountLedgers.${k}`, group: g, optional: true })
   refs.push({ kind: 'ledger', name: m.cashBank.receipt, path: 'cashBank.receipt' }, { kind: 'ledger', name: m.cashBank.payment, path: 'cashBank.payment' })
   for (const [k, v] of Object.entries(m.voucherTypes)) refs.push({ kind: 'voucher_type', name: v, path: `voucherTypes.${k}` })
   refs.push({ kind: 'godown', name: m.defaultGodown, path: 'defaultGodown' })
   for (const [k, v] of Object.entries(m.groups)) {
     if (k === 'defaultUnit') refs.push({ kind: 'unit', name: v, path: 'groups.defaultUnit' })
     else if (k === 'items') { if (v) refs.push({ kind: 'stock_group', name: v, path: 'groups.items' }) }
+    else if (k === 'discountAllowed' || k === 'discountReceived') refs.push({ kind: 'group', name: v, path: `groups.${k}`, optional: true })
     else refs.push({ kind: 'group', name: v, path: `groups.${k}` })
   }
   return refs

@@ -146,6 +146,9 @@ export function toVoucherInput(v: Voucher, m: Mapping, ctx: VoucherContext = {})
     taxLedgers: taxLedgersFor(taxSet, 0),
     cashLedger: v.kind === 'payment' ? m.cashBank.payment : m.cashBank.receipt,
     roundOff: m.roundOff.enabled ? m.roundOff : undefined,
+    discountLedger: v.kind === 'credit_note' ? m.discountLedgers.salesReturn ?? m.discountLedgers.sales
+      : v.kind === 'debit_note' ? m.discountLedgers.purchaseReturn ?? m.discountLedgers.purchase
+      : saleSide ? m.discountLedgers.sales : m.discountLedgers.purchase,
     lines: v.lines?.map((l) => {
       const item = map(m.names.items, l.item)
       return {
@@ -160,7 +163,7 @@ export function toVoucherInput(v: Voucher, m: Mapping, ctx: VoucherContext = {})
 /** Masters a voucher needs in Tally, with the role each ledger plays (used for validation + auto-create). */
 export function voucherRequirements(input: VoucherInput) {
   const saleSide = isSaleSideKind(input.kind)
-  const ledgers: Array<{ name: string; role: 'party' | 'sales' | 'purchase' | 'tax' | 'roundOff' | 'cash'; head?: 'cgst' | 'sgst' | 'igst'; rate?: number }> = [{ name: input.party, role: 'party' }]
+  const ledgers: Array<{ name: string; role: 'party' | 'sales' | 'purchase' | 'tax' | 'roundOff' | 'cash' | 'discount'; head?: 'cgst' | 'sgst' | 'igst'; rate?: number }> = [{ name: input.party, role: 'party' }]
   const items: string[] = [], godowns: string[] = []
   if (input.kind === 'receipt' || input.kind === 'payment') ledgers.push({ name: input.cashLedger ?? 'Cash', role: 'cash' })
   else {
@@ -168,6 +171,7 @@ export function voucherRequirements(input: VoucherInput) {
     for (const l of p.lines) { ledgers.push({ name: l.ledger, role: saleSide ? 'sales' : 'purchase' }); items.push(l.item); if (l.godown) godowns.push(l.godown) }
     for (const t of p.tax) ledgers.push({ name: t.ledger, role: 'tax', head: t.head })
     if (p.roundOff) ledgers.push({ name: p.roundOff.ledger, role: 'roundOff' })
+    if (p.discount) ledgers.push({ name: p.discount.ledger, role: 'discount' })
   }
   const uniq = <T,>(a: T[], k: (x: T) => string) => [...new Map(a.map((x) => [k(x).toLowerCase(), x])).values()]
   return { voucherType: input.voucherTypeName!, ledgers: uniq(ledgers, (l) => l.name), items: uniq(items, (x) => x), godowns: uniq(godowns, (x) => x) }

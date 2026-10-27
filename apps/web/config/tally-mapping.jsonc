@@ -42,6 +42,9 @@
 
   // Round the invoice total and post the difference to this ledger (voucher stays balanced)
   "roundOff": { "enabled": false, "ledger": "Round Off", "mode": "nearest", "precision": 1 },
+  // trade discount (voucher "discount" / line "discount"): items stay at gross rate, the discount is posted here,
+  // and GST is charged on the value after discount. Sales: debited; purchase: credited. Returns fall back to these.
+  "discountLedgers": { "sales": "Discount Allowed", "purchase": "Discount Received" },
 
   // Cash / bank ledger for receipts and payments
   "cashBank": { "receipt": "Cash", "payment": "Cash" },
@@ -53,6 +56,7 @@
     "customers": "Sundry Debtors", "suppliers": "Sundry Creditors",
     "salesLedgers": "Sales Accounts", "purchaseLedgers": "Purchase Accounts",
     "taxLedgers": "Duties & Taxes", "roundOff": "Indirect Expenses",
+    "discountAllowed": "Indirect Expenses", "discountReceived": "Indirect Incomes",
     "items": "",            // stock group for new items ("" = Primary)
     "defaultUnit": "Nos"
   },

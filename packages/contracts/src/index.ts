@@ -54,7 +54,9 @@ export const MasterDataZ = { group: GroupZ, ledger: LedgerZ, unit: UnitZ, stock_
 
 export const VoucherLineZ = z.object({
   item: z.string().min(1), qty: z.number().positive(), rate: z.number().nonnegative(),
-  godown: z.string().optional(), unit: z.string().optional(), gstRate: z.number().optional()
+  godown: z.string().optional(), unit: z.string().optional(), gstRate: z.number().optional(),
+  /** trade discount on this line (amount, before tax); posted to the discount ledger, reduces taxable value */
+  discount: z.number().nonnegative().optional()
 })
 export const VoucherZ = z.object({
   kind: z.enum(VOUCHER_KINDS), number: z.string().min(1), date, party: z.string().min(1),
@@ -63,9 +65,23 @@ export const VoucherZ = z.object({
   /** credit_note / debit_note: original invoice number; the note is adjusted against it (bill-wise Agst Ref) */
   againstInvoice: z.string().min(1).optional(),
   /** credit_note / debit_note: original invoice date (YYYYMMDD), informational for GST */
-  againstInvoiceDate: date.optional()
+  againstInvoiceDate: date.optional(),
+  /** invoice-level trade discount (amount, before tax). Items stay at gross rate; the discount is posted to the
+   *  mapped discount ledger and apportioned over lines (by value) to reduce each line's taxable value. */
+  discount: z.number().positive().optional(),
+  /** purchase / purchase_order / debit_note: supplier's invoice number and date (Tally "Supplier Invoice No." = REFERENCE) */
+  supplierInvoiceNo: z.string().min(1).optional(),
+  supplierInvoiceDate: date.optional()
 }).superRefine((v, ctx) => {
   if ((v.kind === 'credit_note' || v.kind === 'debit_note') && !(v.lines ?? []).length) ctx.addIssue({ code: 'custom', path: ['lines'], message: 'credit/debit notes need at least one item line' })
+  const lines = v.lines ?? []
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  lines.forEach((l, i) => { if ((l.discount ?? 0) > r2(l.qty * l.rate) + 1e-9) ctx.addIssue({ code: 'custom', path: ['lines', i, 'discount'], message: 'line discount exceeds line value' }) })
+  if (v.discount !== undefined) {
+    if (!lines.length) ctx.addIssue({ code: 'custom', path: ['discount'], message: 'discount needs item lines' })
+    const net = r2(lines.reduce((s, l) => s + r2(l.qty * l.rate) - (l.discount ?? 0), 0))
+    if (v.discount > net + 1e-9) ctx.addIssue({ code: 'custom', path: ['discount'], message: 'discount exceeds the value of the lines' })
+  }
 })
 export type Voucher = z.infer<typeof VoucherZ>
 

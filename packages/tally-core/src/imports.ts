@@ -57,6 +57,7 @@ export interface VoucherLine {
   item: string; qty: number; rate: number; godown?: string; unit?: string; gstRate?: number
   ledger?: string // sales / purchase ledger for this line (rule-based); falls back to VoucherInput.account
   taxLedgers?: TaxLedgerNames // per-rate tax ledgers; falls back to VoucherInput.taxLedgers
+  discount?: number // line trade discount (amount)
 }
 export interface RoundOffInput { enabled: boolean; ledger: string; mode: 'nearest' | 'up' | 'down'; precision: number }
 export interface VoucherInput {
@@ -77,6 +78,10 @@ export interface VoucherInput {
   roundOff?: RoundOffInput
   againstInvoice?: string // credit/debit note: original invoice (bill-wise Agst Ref)
   againstInvoiceDate?: string
+  discount?: number // invoice-level trade discount (amount), apportioned over lines by value
+  discountLedger?: string // mapping discountLedgers.*
+  supplierInvoiceNo?: string // purchase side: Tally Supplier Invoice No. (REFERENCE)
+  supplierInvoiceDate?: string
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100
@@ -229,21 +234,17 @@ export function computeTotals(v: VoucherInput): VoucherTotals {
     const total = r2(v.amount ?? 0)
     return { lines: [], taxable: total, cgst: 0, sgst: 0, igst: 0, total }
   }
-  const lines = (v.lines ?? []).map((l) => ({ ...l, amount: r2(l.qty * l.rate) }))
-  const taxable = r2(lines.reduce((s, l) => s + l.amount, 0))
-  let cgst = 0, sgst = 0, igst = 0
-  for (const l of lines) {
-    const rate = l.gstRate ?? 0
-    if (v.taxMode === 'intra') { cgst += (l.amount * rate) / 200; sgst += (l.amount * rate) / 200 }
-    else if (v.taxMode === 'inter') igst += (l.amount * rate) / 100
-  }
-  cgst = r2(cgst); sgst = r2(sgst); igst = r2(igst)
-  return { lines, taxable, cgst, sgst, igst, total: r2(taxable + cgst + sgst + igst) }
+  const p = voucherPostings(v)
+  const head = (h: 'cgst' | 'sgst' | 'igst') => r2(p.tax.filter((t) => t.head === h).reduce((s, t) => s + t.amount, 0))
+  return { lines: p.lines, taxable: p.taxable, cgst: head('cgst'), sgst: head('sgst'), igst: head('igst'), total: p.total }
 }
 
 export interface VoucherPostings {
-  lines: Array<VoucherLine & { amount: number; ledger: string }>
-  taxable: number
+  /** amount = gross line value (qty x rate); taxableAmount = after line + apportioned invoice discount */
+  lines: Array<VoucherLine & { amount: number; ledger: string; discountAmount: number; taxableAmount: number }>
+  gross: number // sum of line values at gross rate
+  discount: { ledger: string; amount: number } | null
+  taxable: number // gross - discount (GST is computed on this)
   tax: Array<{ ledger: string; head: 'cgst' | 'sgst' | 'igst'; amount: number }>
   roundOff: { ledger: string; amount: number } | null
   total: number // party amount (after rounding)
@@ -254,8 +255,32 @@ export function voucherPostings(v: VoucherInput): VoucherPostings {
   const isSaleSide = isSaleSideKind(v.kind)
   const account = v.account ?? (isSaleSide ? 'Sales' : 'Purchase')
   const defTax = v.taxLedgers ?? { cgst: 'CGST', sgst: 'SGST', igst: 'IGST' }
-  const lines = (v.lines ?? []).map((l) => ({ ...l, amount: r2(l.qty * l.rate), ledger: l.ledger ?? account }))
-  const taxable = r2(lines.reduce((s, l) => s + l.amount, 0))
+  const base = (v.lines ?? []).map((l) => {
+    const amount = r2(l.qty * l.rate)
+    return { ...l, amount, ledger: l.ledger ?? account, lineDiscount: r2(Math.min(l.discount ?? 0, amount)) }
+  })
+  // Invoice discount is a trade discount on the invoice: apportion it over lines by value (after line discounts),
+  // largest-remainder in paise so the shares add up exactly; GST is then charged on each line's net value.
+  const head = r2(v.discount ?? 0)
+  const after = base.map((l) => r2(l.amount - l.lineDiscount))
+  const afterTotal = r2(after.reduce((s, a) => s + a, 0))
+  const shares = after.map(() => 0)
+  if (head > 0 && afterTotal > 0) {
+    const paise = Math.round(Math.min(head, afterTotal) * 100)
+    const raw = after.map((a) => (paise * Math.round(a * 100)) / Math.round(afterTotal * 100))
+    const floor = raw.map(Math.floor)
+    let rest = paise - floor.reduce((s, n) => s + n, 0)
+    const order = raw.map((x, i) => [x - floor[i], i] as const).sort((a, b) => b[0] - a[0] || a[1] - b[1])
+    for (const [, i] of order) { if (rest <= 0) break; floor[i]++; rest-- }
+    floor.forEach((n, i) => { shares[i] = n / 100 })
+  }
+  const lines = base.map(({ lineDiscount, ...l }, i) => {
+    const discountAmount = r2(lineDiscount + shares[i])
+    return { ...l, discountAmount, taxableAmount: r2(l.amount - discountAmount) }
+  })
+  const grossItems = r2(lines.reduce((s, l) => s + l.amount, 0))
+  const discountTotal = r2(lines.reduce((s, l) => s + l.discountAmount, 0))
+  const taxable = r2(grossItems - discountTotal)
   const acc = new Map<string, { ledger: string; head: 'cgst' | 'sgst' | 'igst'; amount: number }>()
   const add = (ledger: string, head: 'cgst' | 'sgst' | 'igst', a: number) => {
     const k = `${head}\u0000${ledger}`
@@ -266,8 +291,8 @@ export function voucherPostings(v: VoucherInput): VoucherPostings {
     const rate = l.gstRate ?? 0
     if (!rate) continue
     const tl = l.taxLedgers ?? defTax
-    if (v.taxMode === 'intra') { add(tl.cgst, 'cgst', (l.amount * rate) / 200); add(tl.sgst, 'sgst', (l.amount * rate) / 200) }
-    else if (v.taxMode === 'inter') add(tl.igst, 'igst', (l.amount * rate) / 100)
+    if (v.taxMode === 'intra') { add(tl.cgst, 'cgst', (l.taxableAmount * rate) / 200); add(tl.sgst, 'sgst', (l.taxableAmount * rate) / 200) }
+    else if (v.taxMode === 'inter') add(tl.igst, 'igst', (l.taxableAmount * rate) / 100)
   }
   const tax = [...acc.values()].map((t) => ({ ...t, amount: r2(t.amount) })).filter((t) => t.amount)
   const gross = r2(taxable + tax.reduce((s, t) => s + t.amount, 0))
@@ -280,7 +305,8 @@ export function voucherPostings(v: VoucherInput): VoucherPostings {
     const diff = r2(total - gross)
     if (diff) roundOff = { ledger: v.roundOff.ledger, amount: diff }
   }
-  return { lines, taxable, tax, roundOff, total }
+  const discount = discountTotal ? { ledger: v.discountLedger ?? (isSaleSide ? 'Discount Allowed' : 'Discount Received'), amount: discountTotal } : null
+  return { lines, gross: grossItems, discount, taxable, tax, roundOff, total }
 }
 
 function ledgerEntry(ledger: string, deemedPositive: boolean, amount: number, extra = '') {
@@ -308,7 +334,8 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
     `<EFFECTIVEDATE>${v.date}</EFFECTIVEDATE>`,
     `<VOUCHERTYPENAME>${vchType}</VOUCHERTYPENAME>`,
     `<VOUCHERNUMBER>${esc(v.number)}</VOUCHERNUMBER>`,
-    `<REFERENCE>${esc(v.reference ?? v.number)}</REFERENCE>`,
+    `<REFERENCE>${esc(v.supplierInvoiceNo ?? v.reference ?? v.number)}</REFERENCE>`,
+    ...(v.supplierInvoiceNo && v.supplierInvoiceDate ? [`<REFERENCEDATE>${v.supplierInvoiceDate}</REFERENCEDATE>`] : []),
     `<PARTYLEDGERNAME>${esc(v.party)}</PARTYLEDGERNAME>`,
     `<PARTYNAME>${esc(v.party)}</PARTYNAME>`,
     `<BASICBASEPARTYNAME>${esc(v.party)}</BASICBASEPARTYNAME>`,
@@ -340,12 +367,15 @@ export function buildVoucherXml(v: VoucherInput, action: ImportAction): string {
           `</ALLINVENTORYENTRIES.LIST>`
       )
     }
-    const billRef = isNote && v.againstInvoice ? v.againstInvoice : v.number
+    // purchase side: the bill is the supplier's invoice number when given (what payments are matched against)
+    const billRef = isNote && v.againstInvoice ? v.againstInvoice : v.supplierInvoiceNo ?? v.number
     const bill = isOrder
       ? ''
       : `<BILLALLOCATIONS.LIST><NAME>${esc(billRef)}</NAME><BILLTYPE>${isNote && v.againstInvoice ? 'Agst Ref' : 'New Ref'}</BILLTYPE><AMOUNT>${amt(-sign * p.total)}</AMOUNT></BILLALLOCATIONS.LIST>`
     // party: opposite side of the line ledgers (debit = negative + deemed positive)
     body.push(ledgerEntry(v.party, sign === 1, -sign * p.total, `<ISPARTYLEDGER>Yes</ISPARTYLEDGER>${bill}`))
+    // trade discount: opposite side of the item lines (sales: debited, purchase: credited); party = gross - discount + tax
+    if (p.discount) body.push(ledgerEntry(p.discount.ledger, sign === 1, -sign * p.discount.amount))
     for (const t of p.tax) body.push(ledgerEntry(t.ledger, deemed, sign * t.amount))
     if (p.roundOff) { const a = sign * p.roundOff.amount; body.push(ledgerEntry(p.roundOff.ledger, a < 0, a)) }
   } else {

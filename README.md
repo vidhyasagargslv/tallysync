@@ -107,6 +107,16 @@ different rates can land in different sales ledgers. Tax ledgers come from `tax`
 `byRate` overrides. With `roundOff.enabled` the party total is rounded (`nearest`/`up`/`down` to `precision`) and the
 difference is posted to the round-off ledger so the voucher balances.
 
+**Trade discount (optional, backward compatible).** A voucher may carry `discount` (invoice-level amount) and/or a
+per-line `discount` (amount). Items are posted at their gross rate; the invoice discount is apportioned over lines by
+value, GST is computed on each line's value *after* discount (a trade discount shown on the invoice reduces the taxable
+value, CGST Act s.15(3)(a)), and the total discount is posted to `discountLedgers.sales` (debited, default
+`Discount Allowed`) or `discountLedgers.purchase` (credited, default `Discount Received`); credit/debit notes use
+`salesReturn`/`purchaseReturn` or fall back. Party = gross − discount + tax (± round-off). Missing discount ledgers are
+only a validation *warning* (needed when used); with `autoCreate.ledgers` they are created under
+`groups.discountAllowed` / `groups.discountReceived`. Purchases may send `supplierInvoiceNo`/`supplierInvoiceDate`,
+posted as Tally REFERENCE / REFERENCEDATE (Supplier Invoice No.) and used as the bill-wise reference.
+
 ```jsonc
 {
   "version": "2",
