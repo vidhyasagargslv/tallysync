@@ -7,6 +7,14 @@ const latest = (list: unknown) => {
   return a.length ? a[a.length - 1] : undefined
 }
 const has = (v: unknown) => text(v) !== ''
+/** TallyPrime 4+ keeps HSN in HSNDETAILS.LIST; older releases in GSTDETAILS.LIST (latest entry may carry only rates). */
+const hsnOf = (j: any): string | null => {
+  for (const key of ['HSNDETAILS.LIST', 'GSTDETAILS.LIST']) {
+    const list = asArray<any>(j?.[key])
+    for (let i = list.length - 1; i >= 0; i--) { const h = text(list[i]?.HSNCODE); if (h) return h }
+  }
+  return null
+}
 
 export function objectName(key: ObjectKey, j: any): string {
   if (key === 'voucher') return `${text(j.VOUCHERTYPENAME) || j['@VCHTYPE'] || ''}/${text(j.VOUCHERNUMBER)}`
@@ -47,7 +55,7 @@ export function normalize(key: ObjectKey, j: any): Record<string, unknown> {
         for (const sw of asArray<any>(gst?.['STATEWISEDETAILS.LIST']))
           for (const rd of asArray<any>(sw['RATEDETAILS.LIST'])) if (/IGST|Integrated/i.test(text(rd.GSTRATEDUTYHEAD))) gstRate = num(rd.GSTRATE)
         Object.assign(d, {
-          baseUnits: text(j.BASEUNITS) || null, hsn: text(gst?.HSNCODE) || null, gstRate,
+          baseUnits: text(j.BASEUNITS) || null, hsn: hsnOf(j), gstRate,
           openingQty: has(j.OPENINGBALANCE) ? num(j.OPENINGBALANCE) : null,
           closingQty: has(j.CLOSINGBALANCE) ? num(j.CLOSINGBALANCE) : null,
           closingValue: has(j.CLOSINGVALUE) ? num(j.CLOSINGVALUE) : null,

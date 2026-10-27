@@ -30,7 +30,7 @@ export const OBJECTS: Record<ObjectKey, ObjectDef> = {
   stock_group: { key: 'stock_group', tdlType: 'StockGroup', tag: 'STOCKGROUP', incremental: true, extraFetch: [] },
   stock_item: {
     key: 'stock_item', tdlType: 'StockItem', tag: 'STOCKITEM', incremental: true,
-    extraFetch: ['OpeningBalance', 'OpeningValue', 'OpeningRate', 'ClosingBalance', 'ClosingValue', 'ClosingRate', 'BatchAllocations', 'GSTDetails']
+    extraFetch: ['OpeningBalance', 'OpeningValue', 'OpeningRate', 'ClosingBalance', 'ClosingValue', 'ClosingRate', 'BatchAllocations', 'GSTDetails', 'HSNDetails']
   },
   godown: { key: 'godown', tdlType: 'Godown', tag: 'GODOWN', incremental: true, extraFetch: [] },
   voucher_type: { key: 'voucher_type', tdlType: 'VoucherType', tag: 'VOUCHERTYPE', incremental: true, extraFetch: [] },
